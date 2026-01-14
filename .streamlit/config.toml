@@ -1,0 +1,7 @@
+[server]
+# Disable file watcher to prevent inotify limit issues on Streamlit Cloud
+fileWatcherType = "none"
+runOnSave = false
+
+[browser]
+gatherUsageStats = false
