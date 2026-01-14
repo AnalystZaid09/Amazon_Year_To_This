@@ -5,27 +5,23 @@ from pathlib import Path
 import io
 import calendar
 
+import base64
+
 st.set_page_config(page_title="Sales Data Analysis", layout="wide", initial_sidebar_state="expanded")
 
-# Helper function to create Excel data for downloads (cached to prevent rerun issues on Streamlit Cloud)
-@st.cache_data(show_spinner=False)
-def create_excel_bytes(_df_hash, df_data):
-    """Create Excel data as bytes for download button. Cached to prevent regeneration on rerun."""
+# Helper function to create download link (base64 approach - works reliably on Streamlit Cloud)
+def create_download_link(df, filename, link_text):
+    """Generate a download link for a DataFrame as Excel file using base64 encoding.
+    This approach doesn't trigger Streamlit reruns and works reliably on Streamlit Cloud."""
     try:
         output = io.BytesIO()
-        df = pd.DataFrame(df_data)
         df.to_excel(output, index=False, engine='openpyxl')
         output.seek(0)
-        return output.getvalue()
+        b64 = base64.b64encode(output.getvalue()).decode()
+        href = f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="{filename}" style="display: inline-block; padding: 0.5rem 1rem; background-color: #4CAF50; color: white; text-decoration: none; border-radius: 5px; font-weight: bold;">📥 {link_text}</a>'
+        return href
     except Exception as e:
-        st.error(f"Error creating Excel file: {e}")
-        return None
-
-def get_excel_download_data(df):
-    """Wrapper to generate cached Excel bytes from DataFrame."""
-    # Create a hash based on DataFrame content for caching
-    df_hash = hash(tuple(df.columns.tolist()) + (len(df),))
-    return create_excel_bytes(df_hash, df.to_dict('list'))
+        return f'<p style="color: red;">Error creating download: {e}</p>'
 
 # Custom CSS for better UI
 st.markdown("""
@@ -413,15 +409,8 @@ if zip_files and pm_file:
         
         st.dataframe(brand_pivot, width='stretch', height=600)
         
-        # Download button - Excel format (using cached data to prevent rerun issues)
-        excel_data = get_excel_download_data(brand_pivot)
-        st.download_button(
-            label="📥 Download Brand Analysis Excel",
-            data=excel_data,
-            file_name=f"brand_analysis_{time_period}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="brand_analysis_download"
-        )
+        # Download link - Excel format (base64 approach for Streamlit Cloud)
+        st.markdown(create_download_link(brand_pivot, f"brand_analysis_{time_period}.xlsx", "Download Brand Analysis Excel"), unsafe_allow_html=True)
     
     with tab3:
         st.header("ASIN Analysis")
@@ -449,15 +438,8 @@ if zip_files and pm_file:
         
         st.dataframe(asin_pivot, width='stretch', height=600)
         
-        # Download button - Excel format (using cached data to prevent rerun issues)
-        excel_data_asin = get_excel_download_data(asin_pivot)
-        st.download_button(
-            label="📥 Download ASIN Analysis Excel",
-            data=excel_data_asin,
-            file_name=f"asin_analysis_{time_period}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="asin_analysis_download"
-        )
+        # Download link - Excel format (base64 approach for Streamlit Cloud)
+        st.markdown(create_download_link(asin_pivot, f"asin_analysis_{time_period}.xlsx", "Download ASIN Analysis Excel"), unsafe_allow_html=True)
     
     with tab4:
         st.header("Raw/Processed Data")
@@ -477,15 +459,8 @@ if zip_files and pm_file:
             display_df = filtered_df[selected_columns].copy()
             st.dataframe(display_df, width='stretch', height=600)
             
-            # Download button for raw data - Excel format (using cached data to prevent rerun issues)
-            excel_data_raw = get_excel_download_data(display_df)
-            st.download_button(
-                label="📥 Download Filtered Data Excel",
-                data=excel_data_raw,
-                file_name=f"filtered_data_{time_period}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="raw_data_download"
-            )
+            # Download link - Excel format (base64 approach for Streamlit Cloud)
+            st.markdown(create_download_link(display_df, f"filtered_data_{time_period}.xlsx", "Download Filtered Data Excel"), unsafe_allow_html=True)
         else:
             st.warning("Please select at least one column to display")
     
@@ -518,15 +493,8 @@ if zip_files and pm_file:
             display_unfiltered_df = unfiltered_combined_df[selected_columns_unfiltered].copy()
             st.dataframe(display_unfiltered_df, width='stretch', height=600)
             
-            # Download button for unfiltered data - Excel format (using cached data to prevent rerun issues)
-            excel_data_unfiltered = get_excel_download_data(display_unfiltered_df)
-            st.download_button(
-                label="📥 Download Combined (Unfiltered) Data Excel",
-                data=excel_data_unfiltered,
-                file_name=f"combined_unfiltered_data_{time_period}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="download_unfiltered"
-            )
+            # Download link - Excel format (base64 approach for Streamlit Cloud)
+            st.markdown(create_download_link(display_unfiltered_df, f"combined_unfiltered_data_{time_period}.xlsx", "Download Combined (Unfiltered) Data Excel"), unsafe_allow_html=True)
         else:
             st.warning("Please select at least one column to display")
 
@@ -667,15 +635,8 @@ if zip_files and pm_file:
                 
                 st.dataframe(display_brand_comparison, width='stretch', height=600)
                 
-                # Download button (using cached data to prevent rerun issues)
-                excel_data_brand_comp = get_excel_download_data(brand_comparison)
-                st.download_button(
-                    label="📥 Download Brand Comparison Excel",
-                    data=excel_data_brand_comp,
-                    file_name=f"brand_comparison_{current_year}_vs_{previous_year}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="download_brand_comparison"
-                )
+                # Download link (base64 approach for Streamlit Cloud)
+                st.markdown(create_download_link(brand_comparison, f"brand_comparison_{current_year}_vs_{previous_year}.xlsx", "Download Brand Comparison Excel"), unsafe_allow_html=True)
         else:
             st.warning("⚠️ Need at least 2 years of data for comparison. Please upload data from multiple years.")
     
@@ -816,15 +777,8 @@ if zip_files and pm_file:
                 
                 st.dataframe(display_asin_comparison, width='stretch', height=600)
                 
-                # Download button (using cached data to prevent rerun issues)
-                excel_data_asin_comp = get_excel_download_data(asin_comparison)
-                st.download_button(
-                    label="📥 Download ASIN Comparison Excel",
-                    data=excel_data_asin_comp,
-                    file_name=f"asin_comparison_{current_year_asin}_vs_{previous_year_asin}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="download_asin_comparison"
-                )
+                # Download link (base64 approach for Streamlit Cloud)
+                st.markdown(create_download_link(asin_comparison, f"asin_comparison_{current_year_asin}_vs_{previous_year_asin}.xlsx", "Download ASIN Comparison Excel"), unsafe_allow_html=True)
         else:
             st.warning("⚠️ Need at least 2 years of data for comparison. Please upload data from multiple years.")
 
