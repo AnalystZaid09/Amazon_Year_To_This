@@ -76,10 +76,16 @@ zip_files = st.sidebar.file_uploader(
 )
 pm_file = st.sidebar.file_uploader("Upload PM Excel File", type=['xlsx', 'xls'])
 
+# NEW: High Volume Toggle for 50+ files
+high_volume_mode = st.sidebar.checkbox(
+    "🚀 High Volume Mode (50+ files)", 
+    help="Disables detailed raw data view to save memory for very large uploads"
+)
+
 if zip_files and pm_file:
     # Process ZIP files
     @st.cache_data
-    def process_zip_files(zip_file_list):
+    def process_zip_files(zip_file_list, h_volume=False):
         shipment_dfs = []
         unfiltered_dfs = []
         transaction_counts = {}
@@ -97,10 +103,9 @@ if zip_files and pm_file:
                         with z.open(file_name) as f:
                             if file_name.lower().endswith('.csv'):
                                 try:
-                                    # Try loading only relevant columns to save memory
+                                    # Use usecols to only load what's needed for analysis
                                     df = pd.read_csv(f, low_memory=False, usecols=lambda x: x in relevant_cols)
                                 except ValueError:
-                                    # Fallback if columns aren't as expected
                                     f.seek(0)
                                     df = pd.read_csv(f, low_memory=False)
                             elif file_name.lower().endswith(('.xlsx', '.xls')):
@@ -124,24 +129,31 @@ if zip_files and pm_file:
                                 if not ship_df.empty:
                                     shipment_dfs.append(ship_df)
                                 
-                                # For unfiltered data, downcast to save space
-                                for col in df.select_dtypes(include=['object']).columns:
-                                    if df[col].nunique() < 100:
-                                        df[col] = df[col].astype('category')
-                                unfiltered_dfs.append(df)
+                                # ONLY collect unfiltered data if NOT in High Volume mode
+                                if not h_volume:
+                                    # For unfiltered data, downcast to save space
+                                    for col in df.select_dtypes(include=['object']).columns:
+                                        if df[col].nunique() < 100:
+                                            df[col] = df[col].astype('category')
+                                    unfiltered_dfs.append(df)
+                                else:
+                                    # In high volume mode, clear local variables aggressively
+                                    del df
+                                    gc.collect()
                     except Exception as e:
                         st.warning(f"Error reading {file_name}: {e}")
                         continue
         
+        # Concatenate smaller lists
         filtered_combined = pd.concat(shipment_dfs, ignore_index=True) if shipment_dfs else pd.DataFrame()
-        unfiltered_combined = pd.concat(unfiltered_dfs, ignore_index=True) if unfiltered_dfs else pd.DataFrame()
+        unfiltered_combined = pd.concat(unfiltered_dfs, ignore_index=True) if unfiltered_dfs and not h_volume else pd.DataFrame()
         
+        # Explicitly delete temporary lists and collect garbage
         del shipment_dfs, unfiltered_dfs
         gc.collect()
         
         return filtered_combined, unfiltered_combined, transaction_counts
 
-    @st.cache_data
     def process_data(filtered_df, unfiltered_df, pm_df):
         def add_date_columns(df):
             if df.empty: return df
@@ -170,7 +182,7 @@ if zip_files and pm_file:
         return filtered_df, unfiltered_df, len(filtered_df), len(unfiltered_df)
 
     with st.spinner("Processing files..."):
-        f_combined, u_combined, transaction_counts = process_zip_files(zip_files)
+        f_combined, u_combined, transaction_counts = process_zip_files(zip_files, high_volume_mode)
         pm_df = pd.read_excel(pm_file)
         processed_df, unfiltered_combined_df, filtered_count, unfiltered_count = process_data(f_combined, u_combined, pm_df)
         del f_combined, u_combined, pm_df
@@ -181,7 +193,9 @@ if zip_files and pm_file:
     with col1:
         st.success(f"✅ Filtered (Shipment only): **{filtered_count:,}** records")
     with col2:
-        st.info(f"📊 Total Combined (Unfiltered): **{unfiltered_count:,}** records")
+        st.info(f"📊 Total Records: **{unfiltered_count if not high_volume_mode else filtered_count:,}**")
+        if high_volume_mode:
+            st.warning("🚀 High Volume Mode is ACTIVE. Unfiltered data view is disabled to prioritize memory.")
     
     # Show transaction type breakdown in expander for debugging
     with st.expander("🔍 Transaction Type Breakdown"):
@@ -348,16 +362,27 @@ if zip_files and pm_file:
     st.markdown(f"### Current View: {filter_info}")
     st.markdown("---")
     
-    # Main content tabs
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
-        "📈 Summary", 
-        "🏢 Brand Analysis", 
-        "📦 ASIN Analysis", 
-        "📋 Raw Data", 
-        "📊 Combined Data (Unfiltered)",
-        "📊 Brand Comparison (YoY)",
-        "📦 ASIN Comparison (YoY)"
-    ])
+    # Main content tabs - Tab 5 is conditional based on high_volume_mode
+    tabs = ["📈 Summary", "🏢 Brand Analysis", "📦 ASIN Analysis", "📋 Raw Data"]
+    if not high_volume_mode:
+        tabs.append("📊 Combined Data (Unfiltered)")
+    tabs.extend(["📊 Brand Comparison (YoY)", "📦 ASIN Comparison (YoY)"])
+    
+    tab_list = st.tabs(tabs)
+    
+    # Map tabs correctly based on whether Tab 5 exists
+    tab1 = tab_list[0]
+    tab2 = tab_list[1]
+    tab3 = tab_list[2]
+    tab4 = tab_list[3]
+    if not high_volume_mode:
+        tab5 = tab_list[4]
+        tab6 = tab_list[5]
+        tab7 = tab_list[6]
+    else:
+        tab5 = None
+        tab6 = tab_list[4]
+        tab7 = tab_list[5]
     
     with tab1:
         st.header("Summary Statistics")
@@ -374,22 +399,26 @@ if zip_files and pm_file:
             st.metric("Unique Brands", f"{filtered_df['Brand'].nunique():,}")
         
         st.subheader("Monthly Trend")
-        monthly_trend = filtered_df.groupby('Month_Year').agg({
-            'Quantity': 'sum',
-            'Invoice Amount': 'sum'
-        }).reset_index()
-        
-        # Sort by date
-        monthly_trend['sort_date'] = pd.to_datetime(monthly_trend['Month_Year'], format='%b-%y')
-        monthly_trend = monthly_trend.sort_values('sort_date')
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            st.line_chart(monthly_trend.set_index('Month_Year')['Quantity'])
-            st.caption("Quantity Trend")
-        with col2:
-            st.line_chart(monthly_trend.set_index('Month_Year')['Invoice Amount'])
-            st.caption("Invoice Amount Trend")
+        # Ensure we don't crash if Month_Year is missing or empty
+        if 'Month_Year' in filtered_df.columns and not filtered_df.empty:
+            monthly_trend = filtered_df.groupby('Month_Year').agg({
+                'Quantity': 'sum',
+                'Invoice Amount': 'sum'
+            }).reset_index()
+            
+            # Sort by date
+            monthly_trend['sort_date'] = pd.to_datetime(monthly_trend['Month_Year'], format='%b-%y')
+            monthly_trend = monthly_trend.sort_values('sort_date')
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.line_chart(monthly_trend.set_index('Month_Year')['Quantity'])
+                st.caption("Quantity Trend")
+            with col2:
+                st.line_chart(monthly_trend.set_index('Month_Year')['Invoice Amount'])
+                st.caption("Invoice Amount Trend")
+        else:
+            st.info("No trend data available for current selection")
     
     with tab2:
         st.header("Brand Analysis")
@@ -459,24 +488,33 @@ if zip_files and pm_file:
         )
         
         if selected_columns:
-            display_df = filtered_df[selected_columns].copy()
+            # Display row limit for large datasets to prevent browser crashes
+            row_limit = 50000
+            if len(filtered_df) > row_limit:
+                st.warning(f"⚠️ Showing only first {row_limit:,} rows for performance. Full data is available in the Excel download below.")
+                display_df = filtered_df[selected_columns].head(row_limit).copy()
+            else:
+                display_df = filtered_df[selected_columns].copy()
+            
             st.dataframe(display_df, width='stretch', height=600)
             
             # Download link - Excel format (base64 approach for Streamlit Cloud)
-            st.markdown(create_download_link(display_df, f"filtered_data_{time_period}.xlsx", "Download Filtered Data Excel"), unsafe_allow_html=True)
+            st.markdown(create_download_link(filtered_df[selected_columns], f"filtered_data_{time_period}.xlsx", "Download ALL Filtered Data Excel"), unsafe_allow_html=True)
         else:
             st.warning("Please select at least one column to display")
     
-    with tab5:
-        st.header("Combined Data (Unfiltered)")
-        st.info(f"📊 This tab shows ALL {unfiltered_count:,} records without the 'Shipment' transaction type filter.")
+    if not high_volume_mode and tab5:
+        with tab5:
+            st.header("Combined Data (Unfiltered)")
+            st.info(f"📊 This tab shows ALL {unfiltered_count:,} records without the 'Shipment' transaction type filter.")
         
         # Show transaction type breakdown
         st.subheader("Transaction Type Distribution")
-        trans_type_counts = unfiltered_combined_df['Transaction Type'].value_counts().reset_index()
-        trans_type_counts.columns = ['Transaction Type', 'Count']
-        trans_type_counts['Percentage'] = (trans_type_counts['Count'] / trans_type_counts['Count'].sum() * 100).round(2).astype(str) + '%'
-        st.dataframe(trans_type_counts, width='stretch')
+        if not unfiltered_combined_df.empty and 'Transaction Type' in unfiltered_combined_df.columns:
+            trans_type_counts = unfiltered_combined_df['Transaction Type'].value_counts().reset_index()
+            trans_type_counts.columns = ['Transaction Type', 'Count']
+            trans_type_counts['Percentage'] = (trans_type_counts['Count'] / trans_type_counts['Count'].sum() * 100).round(2).astype(str) + '%'
+            st.dataframe(trans_type_counts, width='stretch')
         
         st.subheader("All Data")
         
