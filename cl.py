@@ -189,17 +189,20 @@ if zip_files and pm_file:
                 df['Quarter_Year'] = df['Quarter'] + '-' + df['Year'].astype(str)
                 return df
             
-            filtered_df = add_date_columns(filtered_df)
-            unfiltered_df = add_date_columns(unfiltered_df)
-            
             pm_cols = pm_df[['ASIN', 'Brand', 'Brand Manager', 'Vendor SKU Codes', 'Product Name']].drop_duplicates(subset=['ASIN'], keep='first')
-            
-            for df in [filtered_df, unfiltered_df]:
-                if not df.empty: df['Asin'] = df['Asin'].astype(str)
             pm_cols['ASIN'] = pm_cols['ASIN'].astype(str)
             
-            filtered_df = filtered_df.merge(pm_cols, left_on='Asin', right_on='ASIN', how='left')
-            unfiltered_df = unfiltered_df.merge(pm_cols, left_on='Asin', right_on='ASIN', how='left')
+            # Process filtered_df
+            if not filtered_df.empty:
+                filtered_df = add_date_columns(filtered_df)
+                filtered_df['Asin'] = filtered_df['Asin'].astype(str)
+                filtered_df = filtered_df.merge(pm_cols, left_on='Asin', right_on='ASIN', how='left')
+            
+            # Process unfiltered_df (only if not in high volume mode)
+            if not unfiltered_df.empty:
+                unfiltered_df = add_date_columns(unfiltered_df)
+                unfiltered_df['Asin'] = unfiltered_df['Asin'].astype(str)
+                unfiltered_df = unfiltered_df.merge(pm_cols, left_on='Asin', right_on='ASIN', how='left')
             
             gc.collect()
             return filtered_df, unfiltered_df, len(filtered_df), len(unfiltered_df)
@@ -210,21 +213,26 @@ if zip_files and pm_file:
             processed_df, unfiltered_combined_df, filtered_count, unfiltered_count = process_data(f_combined, u_combined, pm_df)
             del f_combined, u_combined, pm_df
             gc.collect()
-    
-    # Show detailed record counts (using counts captured BEFORE merge to avoid PM duplicate inflation)
-    col1, col2 = st.columns(2)
-    with col1:
-        st.success(f"✅ Filtered (Shipment only): **{filtered_count:,}** records")
-    with col2:
-        st.info(f"📊 Total Records: **{unfiltered_count if not high_volume_mode else filtered_count:,}**")
-        if high_volume_mode:
-            st.warning("🚀 High Volume Mode is ACTIVE. Unfiltered data view is disabled to prioritize memory.")
-    
-    # Show transaction type breakdown in expander for debugging
-    with st.expander("🔍 Transaction Type Breakdown"):
-        st.write("Records by Transaction Type:")
-        for trans_type, count in sorted(transaction_counts.items(), key=lambda x: -x[1]):
-            st.write(f"  - **{trans_type}**: {count:,}")
+        
+        # Guard against zero records found
+        if filtered_count == 0 and unfiltered_count == 0:
+            st.warning("⚠️ No valid records found in the uploaded files. Check if you uploaded the correct report types.")
+            st.stop()
+        
+        # Show detailed record counts
+        col1, col2 = st.columns(2)
+        with col1:
+            st.success(f"✅ Filtered (Shipment only): **{filtered_count:,}** records")
+        with col2:
+            st.info(f"📊 Total Records: **{unfiltered_count if not high_volume_mode else filtered_count:,}**")
+            if high_volume_mode:
+                st.warning("🚀 High Volume Mode is ACTIVE. Unfiltered data view is disabled to prioritize memory.")
+        
+        # Show transaction type breakdown
+        with st.expander("🔍 Transaction Type Breakdown"):
+            st.write("Records by Transaction Type:")
+            for trans_type, count in sorted(transaction_counts.items(), key=lambda x: -x[1]):
+                st.write(f"  - **{trans_type}**: {count:,}")
     
     # Enhanced Sidebar filters
     st.sidebar.markdown("---")
