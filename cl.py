@@ -191,16 +191,27 @@ if zip_files and pm_file:
             
             pm_cols = pm_df[['ASIN', 'Brand', 'Brand Manager', 'Vendor SKU Codes', 'Product Name']].drop_duplicates(subset=['ASIN'], keep='first')
             pm_cols['ASIN'] = pm_cols['ASIN'].astype(str)
-            
+            # Helper to clean numeric columns
+            def clean_numeric(df, col):
+                if col in df.columns:
+                    # Remove currency symbols and commas, then convert to numeric
+                    df[col] = df[col].astype(str).replace('[₹, ]', '', regex=True)
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+                return df
+
             # Process filtered_df
             if not filtered_df.empty:
                 filtered_df = add_date_columns(filtered_df)
+                filtered_df = clean_numeric(filtered_df, 'Quantity')
+                filtered_df = clean_numeric(filtered_df, 'Invoice Amount')
                 filtered_df['Asin'] = filtered_df['Asin'].astype(str)
                 filtered_df = filtered_df.merge(pm_cols, left_on='Asin', right_on='ASIN', how='left')
             
             # Process unfiltered_df (only if not in high volume mode)
             if not unfiltered_df.empty:
                 unfiltered_df = add_date_columns(unfiltered_df)
+                unfiltered_df = clean_numeric(unfiltered_df, 'Quantity')
+                unfiltered_df = clean_numeric(unfiltered_df, 'Invoice Amount')
                 unfiltered_df['Asin'] = unfiltered_df['Asin'].astype(str)
                 unfiltered_df = unfiltered_df.merge(pm_cols, left_on='Asin', right_on='ASIN', how='left')
             
@@ -469,15 +480,21 @@ if zip_files and pm_file:
             # Add Grand Total row properly for Arrow compatibility
             grand_total_row = pd.DataFrame({
                 'Brand': ['Grand Total'],
-                'Invoice Amount': [brand_pivot['Invoice Amount'].sum()],
-                'Quantity': [brand_pivot['Quantity'].sum()]
+                'Invoice Amount': [brand_pivot['Invoice Amount'].sum() if 'Invoice Amount' in brand_pivot.columns else 0],
+                'Quantity': [brand_pivot['Quantity'].sum() if 'Quantity' in brand_pivot.columns else 0]
             })
             brand_pivot = pd.concat([brand_pivot, grand_total_row], ignore_index=True)
             
-            # Format display dataframe (keep numeric types for sums above)
+            # Format display dataframe (defensive formatting)
             display_brand_pivot = brand_pivot.copy()
-            display_brand_pivot['Invoice Amount'] = display_brand_pivot['Invoice Amount'].apply(lambda x: f"₹{x:,.2f}")
-            display_brand_pivot['Quantity'] = display_brand_pivot['Quantity'].apply(lambda x: f"{x:,.0f}")
+            if 'Invoice Amount' in display_brand_pivot.columns:
+                display_brand_pivot['Invoice Amount'] = display_brand_pivot['Invoice Amount'].apply(
+                    lambda x: f"₹{float(x):,.2f}" if pd.notnull(x) and str(x).replace('.','',1).replace('-','',1).isdigit() else "₹0.00"
+                )
+            if 'Quantity' in display_brand_pivot.columns:
+                display_brand_pivot['Quantity'] = display_brand_pivot['Quantity'].apply(
+                    lambda x: f"{int(float(x)):,.0f}" if pd.notnull(x) and str(x).replace('.','',1).replace('-','',1).isdigit() else "0"
+                )
             
             st.dataframe(display_brand_pivot, width='stretch', height=600)
             
@@ -507,15 +524,21 @@ if zip_files and pm_file:
                 'Asin': ['Grand Total'],
                 'Product Name': [''],
                 'Brand': [''],
-                'Invoice Amount': [asin_pivot['Invoice Amount'].sum()],
-                'Quantity': [asin_pivot['Quantity'].sum()]
+                'Invoice Amount': [asin_pivot['Invoice Amount'].sum() if 'Invoice Amount' in asin_pivot.columns else 0],
+                'Quantity': [asin_pivot['Quantity'].sum() if 'Quantity' in asin_pivot.columns else 0]
             })
             asin_pivot = pd.concat([asin_pivot, grand_total_row_asin], ignore_index=True)
             
-            # Format display dataframe
+            # Format display dataframe (defensive formatting)
             display_asin_pivot = asin_pivot.copy()
-            display_asin_pivot['Invoice Amount'] = display_asin_pivot['Invoice Amount'].apply(lambda x: f"₹{x:,.2f}")
-            display_asin_pivot['Quantity'] = display_asin_pivot['Quantity'].apply(lambda x: f"{x:,.0f}")
+            if 'Invoice Amount' in display_asin_pivot.columns:
+                display_asin_pivot['Invoice Amount'] = display_asin_pivot['Invoice Amount'].apply(
+                    lambda x: f"₹{float(x):,.2f}" if pd.notnull(x) and str(x).replace('.','',1).replace('-','',1).isdigit() else "₹0.00"
+                )
+            if 'Quantity' in display_asin_pivot.columns:
+                display_asin_pivot['Quantity'] = display_asin_pivot['Quantity'].apply(
+                    lambda x: f"{int(float(x)):,.0f}" if pd.notnull(x) and str(x).replace('.','',1).replace('-','',1).isdigit() else "0"
+                )
             
             st.dataframe(display_asin_pivot, width='stretch', height=600)
             
@@ -875,7 +898,7 @@ if zip_files and pm_file:
                     st.warning("⚠️ Need at least 2 years of data for comparison. Please upload data from multiple years.")
             else:
                 st.warning("⚠️ Need at least 2 years of data for comparison. Please upload data from multiple years.")
-
+        st.info("👈 **Ready!** Adjust filters in the sidebar or export results.")
 else:
     # Landing page with instructions
     col1, col2, col3 = st.columns([1, 2, 1])
@@ -893,47 +916,32 @@ else:
         st.markdown("---")
         
         st.markdown("""
-        ### 📋 Getting Started
+        ### 🚀 Getting Started
         
-        **Step 1:** Upload Files
-        - Navigate to the sidebar (left side)
-        - Upload all B2B and B2C report ZIP files
-        - Upload the PM (Product Master) Excel file
+        Welcome to the **Snaphire Amazon Analysis Dashboard**. This tool allows you to process 
+        multiple B2B/B2C transaction reports and generate comprehensive sales insights.
         
-        **Step 2:** Select Filters
-        - Choose time period: All Data, Quarter, or Month
-        - **Quarter Definitions:**
-          - 🌱 Q1: January - March
-          - ☀️ Q2: April - June  
-          - 🍂 Q3: July - September
-          - ❄️ Q4: October - December
-        - Apply additional filters for Brand and Brand Manager
+        **Step 1:** Upload Data
+        - Upload your **ZIP files** containing Amazon transaction reports.
+        - Upload your **Product Master (PM)** Excel file for brand/manager mapping.
         
-        **Step 3:** Analyze Data
-        - View Summary statistics and trends
-        - Explore Brand-wise analysis
-        - Check ASIN-level details
-        - Export filtered data as CSV
+        **Step 2:** Trigger Analysis
+        - Click the **🚀 Start Data Analysis** button in the sidebar.
+        - Wait for the progress bar to complete (for 50+ files, this may take a few minutes).
         
+        **Step 3:** Explore Insights
+        - Use the **📊 Dashboard Tabs** to navigate through summary statistics, brand analysis, 
+          ASIN breakdowns, and Year-over-Year comparisons.
+          
         ### ✨ Key Features
         
         | Feature | Description |
         |---------|-------------|
-        | 📊 **Summary Dashboard** | Overview metrics, trends, and KPIs |
-        | 🏢 **Brand Analysis** | Sales grouped by brand with totals |
-        | 📦 **ASIN Analysis** | Detailed product-level breakdown |
-        | 📋 **Raw Data Export** | Customizable data export options |
-        | 🎯 **Smart Filters** | Quarter, Month, Brand, and Manager filters |
-        
-        ### 💡 Tips
-        
-        - Use Quarter View for quarterly business reviews
-        - Use Month View for detailed monthly analysis
-        - Download reports for offline analysis
-        - Apply multiple filters for targeted insights
+        | 📈 **YOY Comparison** | Compare sales metrics between any two years |
+        | 🏢 **Brand Analysis** | Performance breakdowns by brand and manager |
+        | 📦 **ASIN Analysis** | Detailed product-level shipment data |
+        | 🚀 **High Volume Mode** | Optimized processing for 50+ file uploads |
         
         """)
-        
-        st.markdown("---")
         
         st.info("👈 **Ready to begin?** Upload your files using the sidebar on the left!")
