@@ -15,19 +15,25 @@ st.set_page_config(page_title="Sales Data Analysis", layout="wide", initial_side
 if 'start_analysis' not in st.session_state:
     st.session_state.start_analysis = False
 
-# Helper function to create download link (base64 approach - works reliably on Streamlit Cloud)
-def create_download_link(df, filename, link_text):
-    """Generate a download link for a DataFrame as Excel file using base64 encoding.
-    This approach doesn't trigger Streamlit reruns and works reliably on Streamlit Cloud."""
-    try:
-        output = io.BytesIO()
-        df.to_excel(output, index=False, engine='openpyxl')
-        output.seek(0)
-        b64 = base64.b64encode(output.getvalue()).decode()
-        href = f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="{filename}" style="display: inline-block; padding: 0.5rem 1rem; background-color: #4CAF50; color: white; text-decoration: none; border-radius: 5px; font-weight: bold;">📥 {link_text}</a>'
-        return href
-    except Exception as e:
-        return f'<p style="color: red;">Error creating download: {e}</p>'
+# Helper function to generate Excel binary data (Memory efficient - only generates when needed)
+@st.cache_data(show_spinner="Generating Excel file...")
+def convert_df_to_excel(df):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False)
+    return output.getvalue()
+
+def render_download_button(df, filename, button_text, key=None):
+    """Use native Streamlit download_button.
+    This is much more memory efficient than b64-encoded HTML links."""
+    st.download_button(
+        label=f"📥 {button_text}",
+        data=convert_df_to_excel(df),
+        file_name=filename,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key=key
+    )
+
 
 # Custom CSS for better UI
 st.markdown("""
@@ -114,20 +120,22 @@ if zip_files and pm_file:
         
         # Process ZIP files
         def process_zip_files(zip_file_list, h_volume=False):
-            shipment_dfs = []
-            unfiltered_dfs = []
             transaction_counts = {}
+            filtered_combined = pd.DataFrame()
+            unfiltered_combined = pd.DataFrame()
             
-            # Key columns to load - reduce memory by only loading what's needed for analysis
+            # Temporary storage to batch concats (reduces overhead while keeping peak RAM low)
+            ship_batch = []
+            unfilt_batch = []
+            batch_size = 10
+            
             relevant_cols = ['Invoice Date', 'Asin', 'Quantity', 'Invoice Amount', 'Order Id', 'Shipment Id', 'Transaction Type']
             
-            # Step 1: Count total files for the progress bar
             total_files = 0
             for uploaded_zip in zip_file_list:
                 with zipfile.ZipFile(uploaded_zip, 'r') as z:
                     total_files += len([f for f in z.namelist() if f.lower().endswith(('.csv', '.xlsx', '.xls')) and not f.endswith('/')])
             
-            # Step 2: Initialize progress bar
             progress_bar = st.progress(0, text="Preparing analysis...")
             status_text = st.empty()
             processed_count = 0
@@ -147,26 +155,24 @@ if zip_files and pm_file:
                             with z.open(file_name) as f:
                                 if file_name.lower().endswith('.csv'):
                                     try:
-                                        # Use usecols to only load what's needed for analysis
                                         df = pd.read_csv(f, low_memory=False, usecols=lambda x: x in relevant_cols)
                                     except ValueError:
                                         f.seek(0)
                                         df = pd.read_csv(f, low_memory=False)
                                 elif file_name.lower().endswith(('.xlsx', '.xls')):
                                     df = pd.read_excel(f)
-                                else:
-                                    continue
+                                else: continue
                                 
                                 if 'Asin' not in df.columns and 'ASIN' in df.columns:
                                     df.rename(columns={'ASIN': 'Asin'}, inplace=True)
                                 
                                 if 'Transaction Type' in df.columns:
-                                    # Count transaction types for summary
+                                    # Update counts
                                     counts = df['Transaction Type'].str.strip().str.lower().value_counts().to_dict()
                                     for t_type, count in counts.items():
                                         transaction_counts[t_type] = transaction_counts.get(t_type, 0) + count
                                     
-                                    # Downcast numeric columns early to save RAM (64 -> 32 bit saves 50% memory)
+                                    # Downcast
                                     for col in ['Quantity', 'Invoice Amount']:
                                         if col in df.columns:
                                             if col == 'Quantity':
@@ -178,30 +184,36 @@ if zip_files and pm_file:
                                     ship_df = df[is_shipment].copy()
                                     
                                     if not ship_df.empty:
-                                        # Use category for low-cardinality strings in shipment data
                                         for col in ['Transaction Type', 'Asin']:
-                                            if col in ship_df.columns:
-                                                ship_df[col] = ship_df[col].astype('category')
-                                        shipment_dfs.append(ship_df)
+                                            if col in ship_df.columns: ship_df[col] = ship_df[col].astype('category')
+                                        ship_batch.append(ship_df)
                                     
                                     if not h_volume:
-                                        # In regular mode, categorize object columns for better compression
                                         for col in df.select_dtypes(include=['object']).columns:
-                                            if df[col].nunique() < 100:
-                                                df[col] = df[col].astype('category')
-                                        unfiltered_dfs.append(df)
+                                            if df[col].nunique() < 100: df[col] = df[col].astype('category')
+                                        unfilt_batch.append(df)
                                     
-                                    # Clear local references immediately
                                     del df, is_shipment
-                                    gc.collect()
-                        except Exception as e:
-                            st.warning(f"Error reading {file_name}: {e}")
-                            continue
+                                    
+                                    # Iterative Concatenation: Flush batches to accumulator to prevent "Doubling Spike"
+                                    if len(ship_batch) >= batch_size:
+                                        filtered_combined = pd.concat([filtered_combined, pd.concat(ship_batch, ignore_index=True)], ignore_index=True)
+                                        ship_batch = []
+                                        gc.collect()
+                                    
+                                    if not h_volume and len(unfilt_batch) >= batch_size:
+                                        unfiltered_combined = pd.concat([unfiltered_combined, pd.concat(unfilt_batch, ignore_index=True)], ignore_index=True)
+                                        unfilt_batch = []
+                                        gc.collect()
+                        except Exception: continue
             
-            filtered_combined = pd.concat(shipment_dfs, ignore_index=True) if shipment_dfs else pd.DataFrame()
-            unfiltered_combined = pd.concat(unfiltered_dfs, ignore_index=True) if unfiltered_dfs and not h_volume else pd.DataFrame()
+            # Final flush
+            if ship_batch:
+                filtered_combined = pd.concat([filtered_combined, pd.concat(ship_batch, ignore_index=True)], ignore_index=True)
+            if unfilt_batch:
+                unfiltered_combined = pd.concat([unfiltered_combined, pd.concat(unfilt_batch, ignore_index=True)], ignore_index=True)
             
-            del shipment_dfs, unfiltered_dfs
+            del ship_batch, unfilt_batch
             progress_bar.empty()
             status_text.empty()
             gc.collect()
@@ -515,8 +527,8 @@ if zip_files and pm_file:
             
             st.dataframe(display_brand_pivot, width='stretch', height=600)
             
-            # Download link (original dataframe for Excel format)
-            st.markdown(create_download_link(brand_pivot, f"brand_analysis_{time_period}.xlsx", "Download Brand Analysis Excel"), unsafe_allow_html=True)
+            # Download link (Excel format)
+            render_download_button(brand_pivot, f"brand_analysis_{time_period}.xlsx", "Download Brand Analysis Excel", key="brand_dl")
         
         with tab2:
             st.header("ASIN Analysis")
@@ -560,8 +572,8 @@ if zip_files and pm_file:
             
             st.dataframe(display_asin_pivot, width='stretch', height=600)
             
-            # Download link (original dataframe for Excel format)
-            st.markdown(create_download_link(asin_pivot, f"asin_analysis_{time_period}.xlsx", "Download ASIN Analysis Excel"), unsafe_allow_html=True)
+            # Download link (Excel format)
+            render_download_button(asin_pivot, f"asin_analysis_{time_period}.xlsx", "Download ASIN Analysis Excel", key="asin_dl")
         
         with tab3:
             st.header("Raw/Processed Data")
@@ -588,8 +600,8 @@ if zip_files and pm_file:
                 
                 st.dataframe(display_df, width='stretch', height=600)
                 
-                # Download link - Excel format (base64 approach for Streamlit Cloud)
-                st.markdown(create_download_link(filtered_df[selected_columns], f"filtered_data_{time_period}.xlsx", "Download ALL Filtered Data Excel"), unsafe_allow_html=True)
+                # Download link - Excel format
+                render_download_button(filtered_df[selected_columns], f"filtered_data_{time_period}.xlsx", "Download ALL Filtered Data Excel", key="raw_dl")
             else:
                 st.warning("Please select at least one column to display")
         
@@ -773,8 +785,8 @@ if zip_files and pm_file:
                     
                     st.dataframe(display_brand_comparison, width='stretch', height=600)
                     
-                    # Download link (base64 approach for Streamlit Cloud)
-                    st.markdown(create_download_link(brand_comparison, f"brand_comparison_{current_year}_vs_{previous_year}.xlsx", "Download Brand Comparison Excel"), unsafe_allow_html=True)
+                    # Download link (native download button)
+                    render_download_button(brand_comparison, f"brand_comparison_{current_year}_vs_{previous_year}.xlsx", "Download Brand Comparison Excel", key="brand_comp_dl")
                 else:
                     st.warning("⚠️ Need at least 2 years of data for comparison. Please upload data from multiple years.")
             else:
@@ -927,8 +939,8 @@ if zip_files and pm_file:
                     
                     st.dataframe(display_asin_comparison, width='stretch', height=600)
                     
-                    # Download link (base64 approach for Streamlit Cloud)
-                    st.markdown(create_download_link(asin_comparison, f"asin_comparison_{current_year_asin}_vs_{previous_year_asin}.xlsx", "Download ASIN Comparison Excel"), unsafe_allow_html=True)
+                    # Download link (native download button)
+                    render_download_button(asin_comparison, f"asin_comparison_{current_year_asin}_vs_{previous_year_asin}.xlsx", "Download ASIN Comparison Excel", key="asin_comp_dl")
                 else:
                     st.warning("⚠️ Need at least 2 years of data for comparison. Please upload data from multiple years.")
             else:
