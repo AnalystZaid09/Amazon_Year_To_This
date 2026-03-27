@@ -454,65 +454,31 @@ if zip_files and pm_file:
         st.markdown(f"### Current View: {filter_info}")
         st.markdown("---")
         
-        # Main content tabs - Tab 5 is conditional based on high_volume_mode
-        tabs = ["📈 Summary", "🏢 Brand Analysis", "📦 ASIN Analysis", "📋 Raw Data"]
+        # Main content tabs - Tab 4 is conditional based on high_volume_mode
+        tabs = ["🏢 Brand Analysis", "📦 ASIN Analysis", "📋 Raw Data"]
         if not high_volume_mode:
             tabs.append("📊 Combined Data (Unfiltered)")
         tabs.extend(["📊 Brand Comparison (YoY)", "📦 ASIN Comparison (YoY)"])
         
         tab_list = st.tabs(tabs)
         
-        # Map tabs correctly based on whether Tab 5 exists
-        tab1 = tab_list[0]
-        tab2 = tab_list[1]
-        tab3 = tab_list[2]
-        tab4 = tab_list[3]
+        # Map tabs correctly based on whether Tab 4 exists
+        tab1 = tab_list[0] # Brand Analysis
+        tab2 = tab_list[1] # ASIN Analysis
+        tab3 = tab_list[2] # Raw Data
         if not high_volume_mode:
-            tab5 = tab_list[4]
-            tab6 = tab_list[5]
-            tab7 = tab_list[6]
+            tab4 = tab_list[3] # Combined Data (Unfiltered)
+            tab5 = tab_list[4] # Brand Comparison (YoY)
+            tab6 = tab_list[5] # ASIN Comparison (YoY)
         else:
-            tab5 = None
-            tab6 = tab_list[4]
-            tab7 = tab_list[5]
+            # When high_volume_mode is True, "Combined Data (Unfiltered)" is skipped.
+            # The original tab_list would have 3 items + 2 items = 5 items.
+            # So, tab_list[3] becomes "Brand Comparison (YoY)" and tab_list[4] becomes "ASIN Comparison (YoY)".
+            tab4 = None # No "Combined Data (Unfiltered)" tab
+            tab5 = tab_list[3] # Brand Comparison (YoY)
+            tab6 = tab_list[4] # ASIN Comparison (YoY)
         
         with tab1:
-            st.header("Summary Statistics")
-            
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                st.metric("Total Quantity", f"{filtered_df['Quantity'].sum():,.0f}")
-            with col2:
-                st.metric("Total Invoice Amount", f"₹{filtered_df['Invoice Amount'].sum():,.2f}")
-            with col3:
-                st.metric("Unique ASINs", f"{filtered_df['Asin'].nunique():,}")
-            with col4:
-                st.metric("Unique Brands", f"{filtered_df['Brand'].nunique():,}")
-            
-            st.subheader("Monthly Trend")
-            # Ensure we don't crash if Month_Year is missing or empty
-            if 'Month_Year' in filtered_df.columns and not filtered_df.empty:
-                monthly_trend = filtered_df.groupby('Month_Year').agg({
-                    'Quantity': 'sum',
-                    'Invoice Amount': 'sum'
-                }).reset_index()
-                
-                # Sort by date
-                monthly_trend['sort_date'] = pd.to_datetime(monthly_trend['Month_Year'], format='%b-%y')
-                monthly_trend = monthly_trend.sort_values('sort_date')
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.line_chart(monthly_trend.set_index('Month_Year')['Quantity'])
-                    st.caption("Quantity Trend")
-                with col2:
-                    st.line_chart(monthly_trend.set_index('Month_Year')['Invoice Amount'])
-                    st.caption("Invoice Amount Trend")
-            else:
-                st.info("No trend data available for current selection")
-        
-        with tab2:
             st.header("Brand Analysis")
             
             brand_pivot = pd.pivot_table(
@@ -520,6 +486,7 @@ if zip_files and pm_file:
                 index='Brand',
                 values=['Quantity', 'Invoice Amount'],
                 aggfunc='sum',
+                observed=True,
                 margins=False
             ).reset_index()
             
@@ -551,7 +518,7 @@ if zip_files and pm_file:
             # Download link (original dataframe for Excel format)
             st.markdown(create_download_link(brand_pivot, f"brand_analysis_{time_period}.xlsx", "Download Brand Analysis Excel"), unsafe_allow_html=True)
         
-        with tab3:
+        with tab2:
             st.header("ASIN Analysis")
             
             asin_pivot = pd.pivot_table(
@@ -559,6 +526,7 @@ if zip_files and pm_file:
                 index=['Asin', 'Product Name', 'Brand'],
                 values=['Quantity', 'Invoice Amount'],
                 aggfunc='sum',
+                observed=True,
                 margins=False
             ).reset_index()
             
@@ -595,7 +563,7 @@ if zip_files and pm_file:
             # Download link (original dataframe for Excel format)
             st.markdown(create_download_link(asin_pivot, f"asin_analysis_{time_period}.xlsx", "Download ASIN Analysis Excel"), unsafe_allow_html=True)
         
-        with tab4:
+        with tab3:
             st.header("Raw/Processed Data")
             
             # Select columns to display
@@ -662,7 +630,7 @@ if zip_files and pm_file:
                     st.warning("Please select at least one column to display")
         
         # Year-over-Year Comparison Tabs
-        with tab6:
+        with tab5:
             st.header("📊 Brand Comparison (Year-over-Year)")
             
             # Get available years
@@ -704,7 +672,8 @@ if zip_files and pm_file:
                         current_year_data,
                         index='Brand',
                         values=['Quantity', 'Invoice Amount'],
-                        aggfunc='sum'
+                        aggfunc='sum',
+                        observed=True
                     ).reset_index()
                     current_brand_pivot.columns = ['Brand', f'Invoice Amount ({current_year})', f'Quantity ({current_year})']
                     
@@ -712,7 +681,8 @@ if zip_files and pm_file:
                         previous_year_data,
                         index='Brand',
                         values=['Quantity', 'Invoice Amount'],
-                        aggfunc='sum'
+                        aggfunc='sum',
+                        observed=True
                     ).reset_index()
                     previous_brand_pivot.columns = ['Brand', f'Invoice Amount ({previous_year})', f'Quantity ({previous_year})']
                 
@@ -805,7 +775,7 @@ if zip_files and pm_file:
             else:
                 st.warning("⚠️ Need at least 2 years of data for comparison. Please upload data from multiple years.")
     
-        with tab7:
+        with tab6:
             st.header("📦 ASIN Comparison (Year-over-Year)")
             
             # Get available years
@@ -847,7 +817,8 @@ if zip_files and pm_file:
                         current_year_data_asin,
                         index=['Asin', 'Brand'],
                         values=['Quantity', 'Invoice Amount'],
-                        aggfunc='sum'
+                        aggfunc='sum',
+                        observed=True
                     ).reset_index()
                     current_asin_pivot.columns = ['Asin', 'Brand', f'Invoice Amount ({current_year_asin})', f'Quantity ({current_year_asin})']
                     
@@ -855,7 +826,8 @@ if zip_files and pm_file:
                         previous_year_data_asin,
                         index=['Asin', 'Brand'],
                         values=['Quantity', 'Invoice Amount'],
-                        aggfunc='sum'
+                        aggfunc='sum',
+                        observed=True
                     ).reset_index()
                     previous_asin_pivot.columns = ['Asin', 'Brand', f'Invoice Amount ({previous_year_asin})', f'Quantity ({previous_year_asin})']
                     
