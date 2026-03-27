@@ -80,7 +80,19 @@ zip_files = st.sidebar.file_uploader(
 )
 pm_file = st.sidebar.file_uploader("Upload PM Excel File", type=['xlsx', 'xls'])
 
-# Reset analysis if files are cleared
+# Reset analysis if files are changed or cleared
+current_batch_id = [f.name for f in zip_files] if zip_files else []
+if pm_file: current_batch_id.append(pm_file.name)
+
+if 'last_batch_id' not in st.session_state:
+    st.session_state.last_batch_id = current_batch_id
+
+if st.session_state.last_batch_id != current_batch_id:
+    st.session_state.start_analysis = False
+    st.session_state.last_batch_id = current_batch_id
+    # Force rerun to clear previous run's data from UI/RAM before next start
+    st.rerun()
+
 if not zip_files or not pm_file:
     st.session_state.start_analysis = False
 # NEW: High Volume Toggle for 50+ files
@@ -97,6 +109,9 @@ if zip_files and pm_file:
             st.rerun()
     
     if st.session_state.start_analysis:
+        # Clear garbage from potential previous runs
+        gc.collect()
+        
         # Process ZIP files
         def process_zip_files(zip_file_list, h_volume=False):
             shipment_dfs = []
