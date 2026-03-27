@@ -530,10 +530,10 @@ if zip_files and pm_file:
                 margins=False
             ).reset_index()
             
-            # Ensure index columns are strings for Arrow compatibility 
+            # Ensure index columns are strings for Arrow compatibility (Safe cast for Categorical)
             for col in ['Asin', 'Product Name', 'Brand']:
                 if col in asin_pivot.columns:
-                    asin_pivot[col] = asin_pivot[col].fillna('').astype(str)
+                    asin_pivot[col] = asin_pivot[col].astype(str).replace(['nan', 'None', '<NA>'], '')
             
             asin_pivot = asin_pivot.sort_values(by='Quantity', ascending=False)
             
@@ -692,7 +692,12 @@ if zip_files and pm_file:
                         current_brand_pivot,
                         on='Brand',
                         how='outer'
-                    ).fillna(0)
+                    )
+                    
+                    # Safe fill: only fill numeric columns with 0, cast categorical to str
+                    brand_comparison['Brand'] = brand_comparison['Brand'].astype(str).replace(['nan', 'None', '<NA>'], 'Unknown Brand')
+                    numeric_cols = brand_comparison.select_dtypes(include=[np.number]).columns
+                    brand_comparison[numeric_cols] = brand_comparison[numeric_cols].fillna(0)
                     
                     # Calculate differences and percentage changes
                     brand_comparison['Qty Difference'] = brand_comparison[f'Quantity ({current_year})'] - brand_comparison[f'Quantity ({previous_year})']
@@ -837,7 +842,15 @@ if zip_files and pm_file:
                         current_asin_pivot,
                         on=['Asin', 'Brand'],
                         how='outer'
-                    ).fillna(0)
+                    )
+                    
+                    # Safe fill: only fill numeric columns with 0, cast identifiers to str
+                    for col in ['Asin', 'Brand']:
+                        if col in asin_comparison.columns:
+                            asin_comparison[col] = asin_comparison[col].astype(str).replace(['nan', 'None', '<NA>'], '')
+                    
+                    numeric_cols_asin = asin_comparison.select_dtypes(include=[np.number]).columns
+                    asin_comparison[numeric_cols_asin] = asin_comparison[numeric_cols_asin].fillna(0)
                     
                     # Calculate differences
                     asin_comparison['Qty Difference'] = asin_comparison[f'Quantity ({current_year_asin})'] - asin_comparison[f'Quantity ({previous_year_asin})']
