@@ -161,23 +161,39 @@ if zip_files and pm_file:
                                     df.rename(columns={'ASIN': 'Asin'}, inplace=True)
                                 
                                 if 'Transaction Type' in df.columns:
+                                    # Count transaction types for summary
                                     counts = df['Transaction Type'].str.strip().str.lower().value_counts().to_dict()
                                     for t_type, count in counts.items():
                                         transaction_counts[t_type] = transaction_counts.get(t_type, 0) + count
                                     
+                                    # Downcast numeric columns early to save RAM (64 -> 32 bit saves 50% memory)
+                                    for col in ['Quantity', 'Invoice Amount']:
+                                        if col in df.columns:
+                                            if col == 'Quantity':
+                                                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype('int32')
+                                            else:
+                                                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype('float32')
+
                                     is_shipment = df['Transaction Type'].str.strip().str.lower() == 'shipment'
                                     ship_df = df[is_shipment].copy()
+                                    
                                     if not ship_df.empty:
+                                        # Use category for low-cardinality strings in shipment data
+                                        for col in ['Transaction Type', 'Asin']:
+                                            if col in ship_df.columns:
+                                                ship_df[col] = ship_df[col].astype('category')
                                         shipment_dfs.append(ship_df)
                                     
                                     if not h_volume:
+                                        # In regular mode, categorize object columns for better compression
                                         for col in df.select_dtypes(include=['object']).columns:
                                             if df[col].nunique() < 100:
                                                 df[col] = df[col].astype('category')
                                         unfiltered_dfs.append(df)
-                                    else:
-                                        del df
-                                        gc.collect()
+                                    
+                                    # Clear local references immediately
+                                    del df, is_shipment
+                                    gc.collect()
                         except Exception as e:
                             st.warning(f"Error reading {file_name}: {e}")
                             continue
@@ -203,15 +219,18 @@ if zip_files and pm_file:
                 df['Quarter'] = pd.cut(df['Month'], bins=[0, 3, 6, 9, 12], labels=['Q1', 'Q2', 'Q3', 'Q4']).astype(str)
                 df['Quarter_Year'] = df['Quarter'] + '-' + df['Year'].astype(str)
                 return df
-            
-            pm_cols = pm_df[['ASIN', 'Brand', 'Brand Manager', 'Vendor SKU Codes', 'Product Name']].drop_duplicates(subset=['ASIN'], keep='first')
+            # Select only essential PM columns to minimize merge memory footprint
+            pm_cols = pm_df[['ASIN', 'Brand', 'Brand Manager', 'Vendor SKU Codes', 'Product Name']].drop_duplicates(subset=['ASIN'], keep='first').copy()
             pm_cols['ASIN'] = pm_cols['ASIN'].astype(str)
+            
             # Helper to clean numeric columns
             def clean_numeric(df, col):
-                if col in df.columns:
-                    # Remove currency symbols and commas, then convert to numeric
-                    df[col] = df[col].astype(str).replace('[₹, ]', '', regex=True)
-                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+                if df.empty or col not in df.columns: return df
+                # Ensure it's string first, then remove garbage, then convert
+                df[col] = df[col].astype(str).str.replace('[₹, ]', '', regex=True)
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+                # Downcast to save 50% RAM for numeric columns
+                df[col] = df[col].astype('int32') if col == 'Quantity' else df[col].astype('float32')
                 return df
 
             # Process filtered_df
@@ -221,6 +240,14 @@ if zip_files and pm_file:
                 filtered_df = clean_numeric(filtered_df, 'Invoice Amount')
                 filtered_df['Asin'] = filtered_df['Asin'].astype(str)
                 filtered_df = filtered_df.merge(pm_cols, left_on='Asin', right_on='ASIN', how='left')
+                if 'ASIN' in filtered_df.columns: del filtered_df['ASIN'] # Drop duplicate join key
+                
+                # Categorize descriptive columns for massive RAM savings in high-volume runs
+                cat_cols = ['Brand', 'Brand Manager', 'Product Name']
+                for col in cat_cols:
+                    if col in filtered_df.columns:
+                        filtered_df[col] = filtered_df[col].fillna(f'Unknown {col}').astype('category')
+                gc.collect()
             
             # Process unfiltered_df (only if not in high volume mode)
             if not unfiltered_df.empty:
@@ -229,7 +256,15 @@ if zip_files and pm_file:
                 unfiltered_df = clean_numeric(unfiltered_df, 'Invoice Amount')
                 unfiltered_df['Asin'] = unfiltered_df['Asin'].astype(str)
                 unfiltered_df = unfiltered_df.merge(pm_cols, left_on='Asin', right_on='ASIN', how='left')
+                if 'ASIN' in unfiltered_df.columns: del unfiltered_df['ASIN'] # Drop duplicate join key
+                
+                cat_cols_u = ['Brand', 'Brand Manager', 'Product Name', 'Transaction Type']
+                for col in cat_cols_u:
+                    if col in unfiltered_df.columns:
+                        unfiltered_df[col] = unfiltered_df[col].fillna(f'Unknown {col}').astype('category')
+                gc.collect()
             
+            del pm_cols
             gc.collect()
             return filtered_df, unfiltered_df, len(filtered_df), len(unfiltered_df)
 
