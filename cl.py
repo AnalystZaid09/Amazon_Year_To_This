@@ -454,49 +454,72 @@ if zip_files and pm_file:
         with tab2:
             st.header("Brand Analysis")
             
-            # Brand pivot
             brand_pivot = pd.pivot_table(
                 filtered_df,
                 index='Brand',
                 values=['Quantity', 'Invoice Amount'],
                 aggfunc='sum',
                 margins=False
-            )
+            ).reset_index()
+            
+            # Ensure Brand is string for Arrow compatibility
+            brand_pivot['Brand'] = brand_pivot['Brand'].astype(str)
             brand_pivot = brand_pivot.sort_values(by='Quantity', ascending=False)
-            brand_pivot.loc['Grand Total'] = brand_pivot.sum()
-            brand_pivot = brand_pivot.reset_index()
             
-            # Format numbers
-            brand_pivot['Invoice Amount'] = brand_pivot['Invoice Amount'].apply(lambda x: f"₹{x:,.2f}")
-            brand_pivot['Quantity'] = brand_pivot['Quantity'].apply(lambda x: f"{x:,.0f}")
+            # Add Grand Total row properly for Arrow compatibility
+            grand_total_row = pd.DataFrame({
+                'Brand': ['Grand Total'],
+                'Invoice Amount': [brand_pivot['Invoice Amount'].sum()],
+                'Quantity': [brand_pivot['Quantity'].sum()]
+            })
+            brand_pivot = pd.concat([brand_pivot, grand_total_row], ignore_index=True)
             
-            st.dataframe(brand_pivot, width='stretch', height=600)
+            # Format display dataframe (keep numeric types for sums above)
+            display_brand_pivot = brand_pivot.copy()
+            display_brand_pivot['Invoice Amount'] = display_brand_pivot['Invoice Amount'].apply(lambda x: f"₹{x:,.2f}")
+            display_brand_pivot['Quantity'] = display_brand_pivot['Quantity'].apply(lambda x: f"{x:,.0f}")
             
-            # Download link (base64 approach for Streamlit Cloud)
+            st.dataframe(display_brand_pivot, width='stretch', height=600)
+            
+            # Download link (original dataframe for Excel format)
             st.markdown(create_download_link(brand_pivot, f"brand_analysis_{time_period}.xlsx", "Download Brand Analysis Excel"), unsafe_allow_html=True)
         
         with tab3:
             st.header("ASIN Analysis")
             
-            # ASIN pivot
             asin_pivot = pd.pivot_table(
                 filtered_df,
                 index=['Asin', 'Product Name', 'Brand'],
                 values=['Quantity', 'Invoice Amount'],
                 aggfunc='sum',
                 margins=False
-            )
+            ).reset_index()
+            
+            # Ensure index columns are strings for Arrow compatibility 
+            for col in ['Asin', 'Product Name', 'Brand']:
+                if col in asin_pivot.columns:
+                    asin_pivot[col] = asin_pivot[col].fillna('').astype(str)
+            
             asin_pivot = asin_pivot.sort_values(by='Quantity', ascending=False)
-            asin_pivot.loc['Grand Total'] = asin_pivot.sum()
-            asin_pivot = asin_pivot.reset_index()
             
-            # Format numbers
-            asin_pivot['Invoice Amount'] = asin_pivot['Invoice Amount'].apply(lambda x: f"₹{x:,.2f}")
-            asin_pivot['Quantity'] = asin_pivot['Quantity'].apply(lambda x: f"{x:,.0f}")
+            # Add Grand Total row properly for Arrow compatibility
+            grand_total_row_asin = pd.DataFrame({
+                'Asin': ['Grand Total'],
+                'Product Name': [''],
+                'Brand': [''],
+                'Invoice Amount': [asin_pivot['Invoice Amount'].sum()],
+                'Quantity': [asin_pivot['Quantity'].sum()]
+            })
+            asin_pivot = pd.concat([asin_pivot, grand_total_row_asin], ignore_index=True)
             
-            st.dataframe(asin_pivot, width='stretch', height=600)
+            # Format display dataframe
+            display_asin_pivot = asin_pivot.copy()
+            display_asin_pivot['Invoice Amount'] = display_asin_pivot['Invoice Amount'].apply(lambda x: f"₹{x:,.2f}")
+            display_asin_pivot['Quantity'] = display_asin_pivot['Quantity'].apply(lambda x: f"{x:,.0f}")
             
-            # Download link (base64 approach for Streamlit Cloud)
+            st.dataframe(display_asin_pivot, width='stretch', height=600)
+            
+            # Download link (original dataframe for Excel format)
             st.markdown(create_download_link(asin_pivot, f"asin_analysis_{time_period}.xlsx", "Download ASIN Analysis Excel"), unsafe_allow_html=True)
         
         with tab4:
