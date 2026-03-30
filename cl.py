@@ -637,7 +637,7 @@ if zip_files and pm_file:
                     st.dataframe(display_unfiltered_df, width='stretch', height=600)
                     
                     # Download link - Excel format (base64 approach for Streamlit Cloud)
-                    st.markdown(create_download_link(display_unfiltered_df, f"combined_unfiltered_data_{time_period}.xlsx", "Download Combined (Unfiltered) Data Excel"), unsafe_allow_html=True)
+                    render_download_button(display_unfiltered_df, f"combined_unfiltered_data_{time_period}.xlsx", "Download Combined (Unfiltered) Data Excel", key="unfiltered_dl")
                 else:
                     st.warning("Please select at least one column to display")
         
