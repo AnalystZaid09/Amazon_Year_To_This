@@ -9,7 +9,7 @@ import numpy as np
 
 import base64
 
-st.set_page_config(page_title="Sales Data Analysis", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Sales Data Analysis - High", layout="wide", initial_sidebar_state="expanded")
 
 # Initialize session state for analysis control
 if 'start_analysis' not in st.session_state:
