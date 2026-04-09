@@ -85,10 +85,12 @@ zip_files = st.sidebar.file_uploader(
     accept_multiple_files=True
 )
 pm_file = st.sidebar.file_uploader("Upload PM Excel File", type=['xlsx', 'xls'])
+cat_file = st.sidebar.file_uploader("Upload ASIN & Category File", type=['xlsx', 'xls'])
 
 # Reset analysis if files are changed or cleared
 current_batch_id = [f.name for f in zip_files] if zip_files else []
 if pm_file: current_batch_id.append(pm_file.name)
+if cat_file: current_batch_id.append(cat_file.name)
 
 if 'last_batch_id' not in st.session_state:
     st.session_state.last_batch_id = current_batch_id
@@ -189,8 +191,12 @@ if zip_files and pm_file:
                                         ship_batch.append(ship_df)
                                     
                                     if not h_volume:
-                                        for col in df.select_dtypes(include=['object']).columns:
-                                            if df[col].nunique() < 100: df[col] = df[col].astype('category')
+                                        # Silence Pandas4Warning by explicitly including 'str'
+                                        object_cols = df.select_dtypes(include=['object', 'str']).columns
+                                        for col in object_cols:
+                                            # Quick check for unique values to categorize
+                                            if df[col].nunique() < 100: 
+                                                df[col] = df[col].astype('category')
                                         unfilt_batch.append(df)
                                     
                                     del df, is_shipment
@@ -220,7 +226,7 @@ if zip_files and pm_file:
             
             return filtered_combined, unfiltered_combined, transaction_counts
 
-        def process_data(filtered_df, unfiltered_df, pm_df):
+        def process_data(filtered_df, unfiltered_df, pm_df, cat_df=None):
             def add_date_columns(df):
                 if df.empty: return df
                 df['Invoice Date'] = pd.to_datetime(df['Invoice Date'], errors='coerce')
@@ -231,6 +237,7 @@ if zip_files and pm_file:
                 df['Quarter'] = pd.cut(df['Month'], bins=[0, 3, 6, 9, 12], labels=['Q1', 'Q2', 'Q3', 'Q4']).astype(str)
                 df['Quarter_Year'] = df['Quarter'] + '-' + df['Year'].astype(str)
                 return df
+            
             # Select only essential PM columns to minimize merge memory footprint
             pm_cols = pm_df[['ASIN', 'Brand', 'Brand Manager', 'Vendor SKU Codes', 'Product Name']].drop_duplicates(subset=['ASIN'], keep='first').copy()
             pm_cols['ASIN'] = pm_cols['ASIN'].astype(str)
@@ -245,6 +252,16 @@ if zip_files and pm_file:
                 df[col] = df[col].astype('int32') if col == 'Quantity' else df[col].astype('float32')
                 return df
 
+            # Prepare category mapping if available
+            cat_mapping = None
+            if cat_df is not None and not cat_df.empty:
+                asin_col = next((c for c in cat_df.columns if c.lower() == 'asin'), None)
+                category_col = next((c for c in cat_df.columns if c.lower() == 'category'), None)
+                if asin_col and category_col:
+                    cat_mapping = cat_df[[asin_col, category_col]].drop_duplicates(subset=[asin_col]).copy()
+                    cat_mapping.rename(columns={asin_col: 'ASIN_CAT', category_col: 'Category'}, inplace=True)
+                    cat_mapping['ASIN_CAT'] = cat_mapping['ASIN_CAT'].astype(str)
+
             # Process filtered_df
             if not filtered_df.empty:
                 filtered_df = add_date_columns(filtered_df)
@@ -252,13 +269,17 @@ if zip_files and pm_file:
                 filtered_df = clean_numeric(filtered_df, 'Invoice Amount')
                 filtered_df['Asin'] = filtered_df['Asin'].astype(str)
                 filtered_df = filtered_df.merge(pm_cols, left_on='Asin', right_on='ASIN', how='left')
-                if 'ASIN' in filtered_df.columns: del filtered_df['ASIN'] # Drop duplicate join key
+                if 'ASIN' in filtered_df.columns: del filtered_df['ASIN']
                 
-                # Categorize descriptive columns for massive RAM savings in high-volume runs
-                cat_cols = ['Brand', 'Brand Manager', 'Product Name']
+                if cat_mapping is not None:
+                    filtered_df = filtered_df.merge(cat_mapping, left_on='Asin', right_on='ASIN_CAT', how='left')
+                    if 'ASIN_CAT' in filtered_df.columns: del filtered_df['ASIN_CAT']
+                
+                # Categorize descriptive columns for massive RAM savings - FIX: cast to str first
+                cat_cols = ['Brand', 'Brand Manager', 'Product Name', 'Category']
                 for col in cat_cols:
                     if col in filtered_df.columns:
-                        filtered_df[col] = filtered_df[col].fillna(f'Unknown {col}').astype('category')
+                        filtered_df[col] = filtered_df[col].astype(str).replace(['nan', 'None', '<NA>', ''], f'Unknown {col}').astype('category')
                 gc.collect()
             
             # Process unfiltered_df (only if not in high volume mode)
@@ -268,23 +289,28 @@ if zip_files and pm_file:
                 unfiltered_df = clean_numeric(unfiltered_df, 'Invoice Amount')
                 unfiltered_df['Asin'] = unfiltered_df['Asin'].astype(str)
                 unfiltered_df = unfiltered_df.merge(pm_cols, left_on='Asin', right_on='ASIN', how='left')
-                if 'ASIN' in unfiltered_df.columns: del unfiltered_df['ASIN'] # Drop duplicate join key
+                if 'ASIN' in unfiltered_df.columns: del unfiltered_df['ASIN']
                 
-                cat_cols_u = ['Brand', 'Brand Manager', 'Product Name', 'Transaction Type']
+                if cat_mapping is not None:
+                    unfiltered_df = unfiltered_df.merge(cat_mapping, left_on='Asin', right_on='ASIN_CAT', how='left')
+                    if 'ASIN_CAT' in unfiltered_df.columns: del unfiltered_df['ASIN_CAT']
+                
+                cat_cols_u = ['Brand', 'Brand Manager', 'Product Name', 'Transaction Type', 'Category']
                 for col in cat_cols_u:
                     if col in unfiltered_df.columns:
-                        unfiltered_df[col] = unfiltered_df[col].fillna(f'Unknown {col}').astype('category')
+                        unfiltered_df[col] = unfiltered_df[col].astype(str).replace(['nan', 'None', '<NA>', ''], f'Unknown {col}').astype('category')
                 gc.collect()
             
-            del pm_cols
+            del pm_cols, cat_mapping
             gc.collect()
             return filtered_df, unfiltered_df, len(filtered_df), len(unfiltered_df)
 
         with st.spinner("Processing files..."):
             f_combined, u_combined, transaction_counts = process_zip_files(zip_files, high_volume_mode)
             pm_df = pd.read_excel(pm_file)
-            processed_df, unfiltered_combined_df, filtered_count, unfiltered_count = process_data(f_combined, u_combined, pm_df)
-            del f_combined, u_combined, pm_df
+            cat_df = pd.read_excel(cat_file) if cat_file else None
+            processed_df, unfiltered_combined_df, filtered_count, unfiltered_count = process_data(f_combined, u_combined, pm_df, cat_df)
+            del f_combined, u_combined, pm_df, cat_df
             gc.collect()
         
         # Guard against zero records found
@@ -525,7 +551,7 @@ if zip_files and pm_file:
                     lambda x: f"{int(float(x)):,.0f}" if pd.notnull(x) and str(x).replace('.','',1).replace('-','',1).isdigit() else "0"
                 )
             
-            st.dataframe(display_brand_pivot, width='stretch', height=600)
+            st.dataframe(display_brand_pivot, use_container_width=True, height=600)
             
             # Download link (Excel format)
             render_download_button(brand_pivot, f"brand_analysis_{time_period}.xlsx", "Download Brand Analysis Excel", key="brand_dl")
@@ -533,9 +559,13 @@ if zip_files and pm_file:
         with tab2:
             st.header("ASIN Analysis")
             
+            asin_index = ['Asin', 'Product Name', 'Brand']
+            if 'Category' in filtered_df.columns:
+                asin_index.append('Category')
+            
             asin_pivot = pd.pivot_table(
                 filtered_df,
-                index=['Asin', 'Product Name', 'Brand'],
+                index=asin_index,
                 values=['Quantity', 'Invoice Amount'],
                 aggfunc='sum',
                 observed=True,
@@ -543,20 +573,24 @@ if zip_files and pm_file:
             ).reset_index()
             
             # Ensure index columns are strings for Arrow compatibility (Safe cast for Categorical)
-            for col in ['Asin', 'Product Name', 'Brand']:
+            for col in asin_index:
                 if col in asin_pivot.columns:
                     asin_pivot[col] = asin_pivot[col].astype(str).replace(['nan', 'None', '<NA>'], '')
             
             asin_pivot = asin_pivot.sort_values(by='Quantity', ascending=False)
             
             # Add Grand Total row properly for Arrow compatibility
-            grand_total_row_asin = pd.DataFrame({
+            grand_total_row_asin_dict = {
                 'Asin': ['Grand Total'],
                 'Product Name': [''],
                 'Brand': [''],
                 'Invoice Amount': [asin_pivot['Invoice Amount'].sum() if 'Invoice Amount' in asin_pivot.columns else 0],
                 'Quantity': [asin_pivot['Quantity'].sum() if 'Quantity' in asin_pivot.columns else 0]
-            })
+            }
+            if 'Category' in asin_pivot.columns:
+                grand_total_row_asin_dict['Category'] = ['']
+                
+            grand_total_row_asin = pd.DataFrame(grand_total_row_asin_dict)
             asin_pivot = pd.concat([asin_pivot, grand_total_row_asin], ignore_index=True)
             
             # Format display dataframe (defensive formatting)
@@ -570,7 +604,7 @@ if zip_files and pm_file:
                     lambda x: f"{int(float(x)):,.0f}" if pd.notnull(x) and str(x).replace('.','',1).replace('-','',1).isdigit() else "0"
                 )
             
-            st.dataframe(display_asin_pivot, width='stretch', height=600)
+            st.dataframe(display_asin_pivot, use_container_width=True, height=600)
             
             # Download link (Excel format)
             render_download_button(asin_pivot, f"asin_analysis_{time_period}.xlsx", "Download ASIN Analysis Excel", key="asin_dl")
@@ -580,7 +614,7 @@ if zip_files and pm_file:
             
             # Select columns to display
             all_columns = filtered_df.columns.tolist()
-            default_columns = ['Invoice Date', 'Asin', 'Brand', 'Product Name', 'Quantity', 
+            default_columns = ['Invoice Date', 'Asin', 'Brand', 'Category', 'Product Name', 'Quantity', 
                               'Invoice Amount', 'Month_Year', 'Quarter', 'Year', 'Order Id', 'Shipment Id']
             
             selected_columns = st.multiselect(
@@ -598,7 +632,7 @@ if zip_files and pm_file:
                 else:
                     display_df = filtered_df[selected_columns].copy()
                 
-                st.dataframe(display_df, width='stretch', height=600)
+                st.dataframe(display_df, use_container_width=True, height=600)
                 
                 # Download link - Excel format
                 render_download_button(filtered_df[selected_columns], f"filtered_data_{time_period}.xlsx", "Download ALL Filtered Data Excel", key="raw_dl")
@@ -616,7 +650,7 @@ if zip_files and pm_file:
                     trans_type_counts = unfiltered_combined_df['Transaction Type'].value_counts().reset_index()
                     trans_type_counts.columns = ['Transaction Type', 'Count']
                     trans_type_counts['Percentage'] = (trans_type_counts['Count'] / trans_type_counts['Count'].sum() * 100).round(2).astype(str) + '%'
-                    st.dataframe(trans_type_counts, width='stretch')
+                    st.dataframe(trans_type_counts, use_container_width=True)
                 
                 st.subheader("All Data")
                 
@@ -634,7 +668,7 @@ if zip_files and pm_file:
                 
                 if selected_columns_unfiltered:
                     display_unfiltered_df = unfiltered_combined_df[selected_columns_unfiltered].copy()
-                    st.dataframe(display_unfiltered_df, width='stretch', height=600)
+                    st.dataframe(display_unfiltered_df, use_container_width=True, height=600)
                     
                     # Download link - Excel format (base64 approach for Streamlit Cloud)
                     render_download_button(display_unfiltered_df, f"combined_unfiltered_data_{time_period}.xlsx", "Download Combined (Unfiltered) Data Excel", key="unfiltered_dl")
@@ -783,7 +817,7 @@ if zip_files and pm_file:
                     with metric_col4:
                         st.metric(f"Brands in {previous_year}", f"{len(previous_year_data['Brand'].dropna().unique()):,}")
                     
-                    st.dataframe(display_brand_comparison, width='stretch', height=600)
+                    st.dataframe(display_brand_comparison, use_container_width=True, height=600)
                     
                     # Download link (native download button)
                     render_download_button(brand_comparison, f"brand_comparison_{current_year}_vs_{previous_year}.xlsx", "Download Brand Comparison Excel", key="brand_comp_dl")
@@ -829,35 +863,39 @@ if zip_files and pm_file:
                     current_year_data_asin = processed_df[processed_df['Year'] == current_year_asin]
                     previous_year_data_asin = processed_df[processed_df['Year'] == previous_year_asin]
                     
+                    yoy_index = ['Asin', 'Brand']
+                    if 'Category' in processed_df.columns:
+                        yoy_index.append('Category')
+                    
                     # Create ASIN pivots for each year
                     current_asin_pivot = pd.pivot_table(
                         current_year_data_asin,
-                        index=['Asin', 'Brand'],
+                        index=yoy_index,
                         values=['Quantity', 'Invoice Amount'],
                         aggfunc='sum',
                         observed=True
                     ).reset_index()
-                    current_asin_pivot.columns = ['Asin', 'Brand', f'Invoice Amount ({current_year_asin})', f'Quantity ({current_year_asin})']
+                    current_asin_pivot.columns = yoy_index + [f'Invoice Amount ({current_year_asin})', f'Quantity ({current_year_asin})']
                     
                     previous_asin_pivot = pd.pivot_table(
                         previous_year_data_asin,
-                        index=['Asin', 'Brand'],
+                        index=yoy_index,
                         values=['Quantity', 'Invoice Amount'],
                         aggfunc='sum',
                         observed=True
                     ).reset_index()
-                    previous_asin_pivot.columns = ['Asin', 'Brand', f'Invoice Amount ({previous_year_asin})', f'Quantity ({previous_year_asin})']
+                    previous_asin_pivot.columns = yoy_index + [f'Invoice Amount ({previous_year_asin})', f'Quantity ({previous_year_asin})']
                     
                     # Merge the two pivots
                     asin_comparison = pd.merge(
                         previous_asin_pivot,
                         current_asin_pivot,
-                        on=['Asin', 'Brand'],
+                        on=yoy_index,
                         how='outer'
                     )
                     
                     # Safe fill: only fill numeric columns with 0, cast identifiers to str
-                    for col in ['Asin', 'Brand']:
+                    for col in yoy_index:
                         if col in asin_comparison.columns:
                             asin_comparison[col] = asin_comparison[col].astype(str).replace(['nan', 'None', '<NA>'], '')
                     
@@ -888,7 +926,7 @@ if zip_files and pm_file:
                     asin_comparison = asin_comparison.sort_values(by=f'Quantity ({current_year_asin})', ascending=False)
                     
                     # Add Grand Total row
-                    grand_total_asin = pd.DataFrame({
+                    grand_total_asin_dict = {
                         'Asin': ['Grand Total'],
                         'Brand': [''],
                         f'Quantity ({previous_year_asin})': [asin_comparison[f'Quantity ({previous_year_asin})'].sum()],
@@ -905,7 +943,11 @@ if zip_files and pm_file:
                             (asin_comparison[f'Invoice Amount ({current_year_asin})'].sum() - asin_comparison[f'Invoice Amount ({previous_year_asin})'].sum()) / 
                             asin_comparison[f'Invoice Amount ({previous_year_asin})'].sum() * 100 if asin_comparison[f'Invoice Amount ({previous_year_asin})'].sum() != 0 else 0
                         ]
-                    })
+                    }
+                    if 'Category' in asin_comparison.columns:
+                        grand_total_asin_dict['Category'] = ['']
+                    
+                    grand_total_asin = pd.DataFrame(grand_total_asin_dict)
                     asin_comparison = pd.concat([asin_comparison, grand_total_asin], ignore_index=True)
                     
                     # Format display dataframe
@@ -937,7 +979,7 @@ if zip_files and pm_file:
                     with metric_col4:
                         st.metric(f"Unique ASINs in {previous_year_asin}", f"{len(previous_year_data_asin['Asin'].dropna().unique()):,}")
                     
-                    st.dataframe(display_asin_comparison, width='stretch', height=600)
+                    st.dataframe(display_asin_comparison, use_container_width=True, height=600)
                     
                     # Download link (native download button)
                     render_download_button(asin_comparison, f"asin_comparison_{current_year_asin}_vs_{previous_year_asin}.xlsx", "Download ASIN Comparison Excel", key="asin_comp_dl")
