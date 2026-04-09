@@ -69,7 +69,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div class="main-header">📊 Sales Data Analysis Dashboard <span style="font-size: 1rem; vertical-align: middle;">(v2.3 - High Stability)</span></div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header">📊 Sales Data Analysis Dashboard <span style="font-size: 1rem; vertical-align: middle;">(v2.5 - Ultra-Stabilized)</span></div>', unsafe_allow_html=True)
 
 # File uploaders
 st.sidebar.header("Upload Files")
@@ -79,8 +79,13 @@ if st.sidebar.button("🔄 Clear Cache & Refresh"):
     st.cache_data.clear()
     st.rerun()
 
-zip_files = st.sidebar.file_uploader(
-    "Upload ZIP files (B2B & B2C Reports)", 
+b2c_files = st.sidebar.file_uploader(
+    "1. B2C Zip Files (Consumer Reports)", 
+    type=['zip'], 
+    accept_multiple_files=True
+)
+b2b_files = st.sidebar.file_uploader(
+    "2. B2B Zip Files (Business Reports)", 
     type=['zip'], 
     accept_multiple_files=True
 )
@@ -88,7 +93,7 @@ pm_file = st.sidebar.file_uploader("Upload PM Excel File", type=['xlsx', 'xls'])
 cat_file = st.sidebar.file_uploader("Upload ASIN & Category File", type=['xlsx', 'xls'])
 
 # Reset analysis if files are changed or cleared
-current_batch_id = [f.name for f in zip_files] if zip_files else []
+current_batch_id = [f.name for f in (b2c_files + b2b_files)] if (b2c_files or b2b_files) else []
 if pm_file: current_batch_id.append(pm_file.name)
 if cat_file: current_batch_id.append(cat_file.name)
 
@@ -98,18 +103,14 @@ if 'last_batch_id' not in st.session_state:
 if st.session_state.last_batch_id != current_batch_id:
     st.session_state.start_analysis = False
     st.session_state.last_batch_id = current_batch_id
-    # Force rerun to clear previous run's data from UI/RAM before next start
-    st.rerun()
 
-if not zip_files or not pm_file:
-    st.session_state.start_analysis = False
-# NEW: High Volume Toggle for 50+ files
 high_volume_mode = st.sidebar.checkbox(
     "🚀 High Volume Mode (50+ files)", 
-    help="Disables detailed raw data view to save memory for very large uploads"
+    value=False, 
+    help="Disables memory-intensive unfiltered data view to prevent crashes on large datasets."
 )
 
-if zip_files and pm_file:
+if (b2c_files or b2b_files) and pm_file:
     # Analysis Trigger Button
     if not st.session_state.start_analysis:
         if st.sidebar.button("🚀 Start Data Analysis", width='stretch', type="primary"):
@@ -121,7 +122,10 @@ if zip_files and pm_file:
         gc.collect()
         
         # Process ZIP files
-        def process_zip_files(zip_file_list, h_volume=False):
+        def process_zip_files(zip_file_list, h_volume=False, segment="B2C"):
+            if not zip_file_list:
+                return pd.DataFrame(), pd.DataFrame(), {}
+                
             transaction_counts = {}
             
             # Use lists for storage - significantly more memory efficient than iterative pd.concat
@@ -135,19 +139,20 @@ if zip_files and pm_file:
                 with zipfile.ZipFile(uploaded_zip, 'r') as z:
                     total_files += len([f for f in z.namelist() if f.lower().endswith(('.csv', '.xlsx', '.xls')) and not f.endswith('/')])
             
-            # Auto-High-Volume Safety Check
-            if total_files > 15 and not h_volume:
-                st.sidebar.warning(f"⚠️ Auto-switching to High Volume Mode ({total_files} files detected)")
+            # v2.5 Auto-High-Volume Safety Check (RAM + Count)
+            total_upload_size = sum([f.size for f in zip_file_list]) if zip_file_list else 0
+            if (total_files > 15 or total_upload_size > 100 * 1024 * 1024) and not h_volume:
+                st.sidebar.warning(f"🚀 {segment} Auto-optimizing for Large Dataset ({total_files} files, {total_upload_size/1024/1024:.1f} MB)")
                 h_volume = True
 
-            progress_bar = st.progress(0, text="Preparing analysis...")
+            progress_bar = st.progress(0, text=f"Preparing {segment} analysis...")
             status_text = st.empty()
             processed_count = 0
             
             # Deep Diagnostic Log
-            with st.sidebar.expander("📝 Processing Logs", expanded=False):
+            with st.sidebar.expander(f"📝 {segment} Logs", expanded=False):
                 log_container = st.empty()
-                logs = ["Starting process..."]
+                logs = [f"Starting {segment} process..."]
                 log_container.code("\n".join(logs))
             
             for uploaded_zip in zip_file_list:
@@ -158,7 +163,7 @@ if zip_files and pm_file:
                         
                         processed_count += 1
                         pct = int((processed_count / total_files) * 100)
-                        status_text.text(f"⏳ Processing file {processed_count} of {total_files}: {file_name} ({pct}%)")
+                        status_text.text(f"⏳ [{segment}] File {processed_count}/{total_files}: {file_name} ({pct}%)")
                         progress_bar.progress(processed_count / total_files)
                         
                         try:
@@ -194,20 +199,20 @@ if zip_files and pm_file:
                                             else:
                                                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype('float32')
 
+                                    # Tag Segment
+                                    df['Segment'] = segment
+
                                     # Filter for shipments
                                     is_shipment = df['Transaction Type'].str.strip().str.lower() == 'shipment'
                                     ship_df = df[is_shipment].copy()
                                     
                                     if not ship_df.empty:
-                                        # Defer categorization to final merge phase to avoid unification overhead
                                         all_shipments.append(ship_df)
                                     
                                     if not h_volume:
                                         all_unfiltered.append(df)
                                     
                                     del df, is_shipment
-                                    
-                                    # Strict Garbage Collection: Run after EVERY file to minimize peak RAM
                                     gc.collect()
                                     
                                     # Update Diagnostic Log
@@ -222,9 +227,7 @@ if zip_files and pm_file:
                             continue
             
             # Final concatenation - One big concat is better than many small ones
-            status_text.text("📊 Consolidating all data... Please wait.")
-            logs.append("📊 Consolidating all data chunks...")
-            log_container.code("\n".join(logs[-10:]))
+            status_text.text(f"📊 Consolidation Phase: {segment}")
             
             filtered_combined = pd.concat(all_shipments, ignore_index=True) if all_shipments else pd.DataFrame()
             del all_shipments
@@ -238,6 +241,22 @@ if zip_files and pm_file:
             status_text.empty()
             
             return filtered_combined, unfiltered_combined, transaction_counts
+
+        # Run sequential processing to save RAM
+        f_b2c, u_b2c, t_b2c = process_zip_files(b2c_files, high_volume_mode, "B2C")
+        f_b2b, u_b2b, t_b2b = process_zip_files(b2b_files, high_volume_mode, "B2B")
+        
+        # Combine results
+        f_combined = pd.concat([f_b2c, f_b2b], ignore_index=True)
+        u_combined = pd.concat([u_b2c, u_b2b], ignore_index=True)
+        
+        # Combine transaction counts
+        t_counts = t_b2c.copy()
+        for k, v in t_b2b.items():
+            t_counts[k] = t_counts.get(k, 0) + v
+            
+        del f_b2c, f_b2b, u_b2c, u_b2b, t_b2c, t_b2b
+        gc.collect()
 
         def process_data(filtered_df, unfiltered_df, pm_df, cat_df=None):
             def add_date_columns(df):
@@ -357,15 +376,24 @@ if zip_files and pm_file:
                 ["📅 All Data", "📆 Quarter View", "🗓️ Month View"],
                 help="Choose how you want to view your data"
             )
+            
+        # Segment Filter
+        segments = ["B2C", "B2B"] if not processed_df.empty else []
+        selected_segments = st.sidebar.multiselect("Select Segment", options=segments, default=segments)
         
+        # Filtering logic
         filtered_df = processed_df.copy()
+        
+        if selected_segments:
+            filtered_df = filtered_df[filtered_df['Segment'].isin(selected_segments)]
+        
         filter_info = ""
         
         if time_period == "📆 Quarter View":
             st.sidebar.markdown("---")
             
             # Get available years
-            years = sorted(processed_df['Year'].dropna().unique(), reverse=True)
+            years = sorted(filtered_df['Year'].dropna().unique(), reverse=True)
             selected_year = st.sidebar.selectbox(
                 "📅 Select Year",
                 years,
@@ -501,8 +529,22 @@ if zip_files and pm_file:
         **Records:** {len(filtered_df):,}
         """)
         
-        # Main content - Show filter summary
         st.markdown(f"### Current View: {filter_info}")
+        
+        # Segment summary metrics - NEW
+        if not filtered_df.empty:
+            seg_col1, seg_col2, seg_col3 = st.columns([1, 1, 2])
+            b2c_total = filtered_df[filtered_df['Segment'] == 'B2C']['Invoice Amount'].sum()
+            b2b_total = filtered_df[filtered_df['Segment'] == 'B2B']['Invoice Amount'].sum()
+            total_sum = b2c_total + b2b_total
+            
+            with seg_col1:
+                st.metric("🛒 B2C Sales", f"₹ {b2c_total:,.0f}", f"{b2c_total/total_sum*100:.1f}% of total" if total_sum > 0 else "")
+            with seg_col2:
+                st.metric("🏢 B2B Sales", f"₹ {b2b_total:,.0f}", f"{b2b_total/total_sum*100:.1f}% of total" if total_sum > 0 else "")
+            with seg_col3:
+                st.info(f"**Total Consolidated Segment Sales:** ₹ {total_sum:,.0f}")
+        
         st.markdown("---")
         
         # Main content tabs - Tab 4 is conditional based on high_volume_mode
