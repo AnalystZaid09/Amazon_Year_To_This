@@ -9,7 +9,7 @@ import numpy as np
 
 import base64
 
-st.set_page_config(page_title="Sales Data Analysis - High", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Sales Data Analysis", layout="wide", initial_sidebar_state="expanded")
 
 # Initialize session state for analysis control
 if 'start_analysis' not in st.session_state:
@@ -69,7 +69,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div class="main-header">📊 Sales Data Analysis Dashboard - High</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header">📊 Sales Data Analysis Dashboard - High <span style="font-size: 1rem; vertical-align: middle;">(v2.3 - High Stability)</span></div>', unsafe_allow_html=True)
 
 # File uploaders
 st.sidebar.header("Upload Files")
@@ -112,7 +112,7 @@ high_volume_mode = st.sidebar.checkbox(
 if zip_files and pm_file:
     # Analysis Trigger Button
     if not st.session_state.start_analysis:
-        if st.sidebar.button("🚀 Start Data Analysis", use_container_width=True, type="primary"):
+        if st.sidebar.button("🚀 Start Data Analysis", width='stretch', type="primary"):
             st.session_state.start_analysis = True
             st.rerun()
     
@@ -197,7 +197,9 @@ if zip_files and pm_file:
                                     # Garbage collect occasionally but less frequently than before to save CPU
                                     if processed_count % 20 == 0: gc.collect()
 
-                        except Exception: continue
+                        except Exception as e:
+                            st.sidebar.error(f"⚠️ Error in {file_name}: {str(e)}")
+                            continue
             
             # Final concatenation - One big concat is better than many small ones
             status_text.text("📊 Consolidating all data... Please wait.")
@@ -540,7 +542,7 @@ if zip_files and pm_file:
                     lambda x: f"{int(float(x)):,.0f}" if pd.notnull(x) and str(x).replace('.','',1).replace('-','',1).isdigit() else "0"
                 )
             
-            st.dataframe(display_brand_pivot, use_container_width=True, height=600)
+            st.dataframe(display_brand_pivot, width='stretch', height=600)
             
             # Download link (Excel format)
             render_download_button(brand_pivot, f"brand_analysis_{time_period}.xlsx", "Download Brand Analysis Excel", key="brand_dl")
@@ -593,7 +595,7 @@ if zip_files and pm_file:
                     lambda x: f"{int(float(x)):,.0f}" if pd.notnull(x) and str(x).replace('.','',1).replace('-','',1).isdigit() else "0"
                 )
             
-            st.dataframe(display_asin_pivot, use_container_width=True, height=600)
+            st.dataframe(display_asin_pivot, width='stretch', height=600)
             
             # Download link (Excel format)
             render_download_button(asin_pivot, f"asin_analysis_{time_period}.xlsx", "Download ASIN Analysis Excel", key="asin_dl")
@@ -621,7 +623,7 @@ if zip_files and pm_file:
                 else:
                     display_df = filtered_df[selected_columns].copy()
                 
-                st.dataframe(display_df, use_container_width=True, height=600)
+                st.dataframe(display_df, width='stretch', height=600)
                 
                 # Download link - Excel format
                 render_download_button(filtered_df[selected_columns], f"filtered_data_{time_period}.xlsx", "Download ALL Filtered Data Excel", key="raw_dl")
@@ -639,7 +641,7 @@ if zip_files and pm_file:
                     trans_type_counts = unfiltered_combined_df['Transaction Type'].value_counts().reset_index()
                     trans_type_counts.columns = ['Transaction Type', 'Count']
                     trans_type_counts['Percentage'] = (trans_type_counts['Count'] / trans_type_counts['Count'].sum() * 100).round(2).astype(str) + '%'
-                    st.dataframe(trans_type_counts, use_container_width=True)
+                    st.dataframe(trans_type_counts, width='stretch')
                 
                 st.subheader("All Data")
                 
@@ -657,7 +659,7 @@ if zip_files and pm_file:
                 
                 if selected_columns_unfiltered:
                     display_unfiltered_df = unfiltered_combined_df[selected_columns_unfiltered].copy()
-                    st.dataframe(display_unfiltered_df, use_container_width=True, height=600)
+                    st.dataframe(display_unfiltered_df, width='stretch', height=600)
                     
                     # Download link - Excel format (base64 approach for Streamlit Cloud)
                     render_download_button(display_unfiltered_df, f"combined_unfiltered_data_{time_period}.xlsx", "Download Combined (Unfiltered) Data Excel", key="unfiltered_dl")
@@ -806,7 +808,7 @@ if zip_files and pm_file:
                     with metric_col4:
                         st.metric(f"Brands in {previous_year}", f"{len(previous_year_data['Brand'].dropna().unique()):,}")
                     
-                    st.dataframe(display_brand_comparison, use_container_width=True, height=600)
+                    st.dataframe(display_brand_comparison, width='stretch', height=600)
                     
                     # Download link (native download button)
                     render_download_button(brand_comparison, f"brand_comparison_{current_year}_vs_{previous_year}.xlsx", "Download Brand Comparison Excel", key="brand_comp_dl")
@@ -968,7 +970,7 @@ if zip_files and pm_file:
                     with metric_col4:
                         st.metric(f"Unique ASINs in {previous_year_asin}", f"{len(previous_year_data_asin['Asin'].dropna().unique()):,}")
                     
-                    st.dataframe(display_asin_comparison, use_container_width=True, height=600)
+                    st.dataframe(display_asin_comparison, width='stretch', height=600)
                     
                     # Download link (native download button)
                     render_download_button(asin_comparison, f"asin_comparison_{current_year_asin}_vs_{previous_year_asin}.xlsx", "Download ASIN Comparison Excel", key="asin_comp_dl")
