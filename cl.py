@@ -338,7 +338,22 @@ if (b2c_files or b2b_files) and pm_file:
             return filtered_df, unfiltered_df, len(filtered_df), len(unfiltered_df)
 
         with st.spinner("Processing files..."):
-            f_combined, u_combined, transaction_counts = process_zip_files(zip_files, high_volume_mode)
+            # Run sequential processing to save RAM
+            f_b2c, u_b2c, t_b2c = process_zip_files(b2c_files, high_volume_mode, "B2C")
+            f_b2b, u_b2b, t_b2b = process_zip_files(b2b_files, high_volume_mode, "B2B")
+            
+            # Combine results
+            f_combined = pd.concat([f_b2c, f_b2b], ignore_index=True)
+            u_combined = pd.concat([u_b2c, u_b2b], ignore_index=True)
+            
+            # Combine transaction counts
+            transaction_counts = t_b2c.copy()
+            for k, v in t_b2b.items():
+                transaction_counts[k] = transaction_counts.get(k, 0) + v
+                
+            del f_b2c, f_b2b, u_b2c, u_b2b, t_b2c, t_b2b
+            gc.collect()
+
             pm_df = pd.read_excel(pm_file)
             cat_df = pd.read_excel(cat_file) if cat_file else None
             processed_df, unfiltered_combined_df, filtered_count, unfiltered_count = process_data(f_combined, u_combined, pm_df, cat_df)
