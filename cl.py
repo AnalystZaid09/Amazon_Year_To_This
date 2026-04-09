@@ -123,13 +123,10 @@ if zip_files and pm_file:
         # Process ZIP files
         def process_zip_files(zip_file_list, h_volume=False):
             transaction_counts = {}
-            filtered_combined = pd.DataFrame()
-            unfiltered_combined = pd.DataFrame()
             
-            # Temporary storage to batch concats (reduces overhead while keeping peak RAM low)
-            ship_batch = []
-            unfilt_batch = []
-            batch_size = 10
+            # Use lists for storage - significantly more memory efficient than iterative pd.concat
+            all_shipments = []
+            all_unfiltered = []
             
             relevant_cols = ['Invoice Date', 'Asin', 'Quantity', 'Invoice Amount', 'Order Id', 'Shipment Id', 'Transaction Type']
             
@@ -160,9 +157,12 @@ if zip_files and pm_file:
                                         df = pd.read_csv(f, low_memory=False, usecols=lambda x: x in relevant_cols)
                                     except ValueError:
                                         f.seek(0)
+                                        # Fallback: Load and immediately filter columns to minimize RAM spike
                                         df = pd.read_csv(f, low_memory=False)
+                                        df = df[[c for c in df.columns if c in relevant_cols]]
                                 elif file_name.lower().endswith(('.xlsx', '.xls')):
                                     df = pd.read_excel(f)
+                                    df = df[[c for c in df.columns if c in relevant_cols]]
                                 else: continue
                                 
                                 if 'Asin' not in df.columns and 'ASIN' in df.columns:
@@ -174,7 +174,7 @@ if zip_files and pm_file:
                                     for t_type, count in counts.items():
                                         transaction_counts[t_type] = transaction_counts.get(t_type, 0) + count
                                     
-                                    # Downcast
+                                    # Downcast numbers immediately
                                     for col in ['Quantity', 'Invoice Amount']:
                                         if col in df.columns:
                                             if col == 'Quantity':
@@ -182,47 +182,36 @@ if zip_files and pm_file:
                                             else:
                                                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype('float32')
 
+                                    # Filter for shipments
                                     is_shipment = df['Transaction Type'].str.strip().str.lower() == 'shipment'
                                     ship_df = df[is_shipment].copy()
                                     
                                     if not ship_df.empty:
-                                        for col in ['Transaction Type', 'Asin']:
-                                            if col in ship_df.columns: ship_df[col] = ship_df[col].astype('category')
-                                        ship_batch.append(ship_df)
+                                        # Defer categorization to final merge phase to avoid unification overhead
+                                        all_shipments.append(ship_df)
                                     
                                     if not h_volume:
-                                        # Silence Pandas4Warning by explicitly including 'str'
-                                        object_cols = df.select_dtypes(include=['object', 'str']).columns
-                                        for col in object_cols:
-                                            # Quick check for unique values to categorize
-                                            if df[col].nunique() < 100: 
-                                                df[col] = df[col].astype('category')
-                                        unfilt_batch.append(df)
+                                        all_unfiltered.append(df)
                                     
                                     del df, is_shipment
-                                    
-                                    # Iterative Concatenation: Flush batches to accumulator to prevent "Doubling Spike"
-                                    if len(ship_batch) >= batch_size:
-                                        filtered_combined = pd.concat([filtered_combined, pd.concat(ship_batch, ignore_index=True)], ignore_index=True)
-                                        ship_batch = []
-                                        gc.collect()
-                                    
-                                    if not h_volume and len(unfilt_batch) >= batch_size:
-                                        unfiltered_combined = pd.concat([unfiltered_combined, pd.concat(unfilt_batch, ignore_index=True)], ignore_index=True)
-                                        unfilt_batch = []
-                                        gc.collect()
+                                    # Garbage collect occasionally but less frequently than before to save CPU
+                                    if processed_count % 20 == 0: gc.collect()
+
                         except Exception: continue
             
-            # Final flush
-            if ship_batch:
-                filtered_combined = pd.concat([filtered_combined, pd.concat(ship_batch, ignore_index=True)], ignore_index=True)
-            if unfilt_batch:
-                unfiltered_combined = pd.concat([unfiltered_combined, pd.concat(unfilt_batch, ignore_index=True)], ignore_index=True)
+            # Final concatenation - One big concat is better than many small ones
+            status_text.text("📊 Consolidating all data... Please wait.")
             
-            del ship_batch, unfilt_batch
+            filtered_combined = pd.concat(all_shipments, ignore_index=True) if all_shipments else pd.DataFrame()
+            del all_shipments
+            gc.collect()
+            
+            unfiltered_combined = pd.concat(all_unfiltered, ignore_index=True) if all_unfiltered else pd.DataFrame()
+            del all_unfiltered
+            gc.collect()
+            
             progress_bar.empty()
             status_text.empty()
-            gc.collect()
             
             return filtered_combined, unfiltered_combined, transaction_counts
 
