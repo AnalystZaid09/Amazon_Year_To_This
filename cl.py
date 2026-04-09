@@ -69,7 +69,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div class="main-header">📊 Sales Data Analysis Dashboard - High <span style="font-size: 1rem; vertical-align: middle;">(v2.3 - High Stability)</span></div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header">📊 Sales Data Analysis Dashboard <span style="font-size: 1rem; vertical-align: middle;">(v2.3 - High Stability)</span></div>', unsafe_allow_html=True)
 
 # File uploaders
 st.sidebar.header("Upload Files")
