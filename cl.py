@@ -135,9 +135,20 @@ if zip_files and pm_file:
                 with zipfile.ZipFile(uploaded_zip, 'r') as z:
                     total_files += len([f for f in z.namelist() if f.lower().endswith(('.csv', '.xlsx', '.xls')) and not f.endswith('/')])
             
+            # Auto-High-Volume Safety Check
+            if total_files > 15 and not h_volume:
+                st.sidebar.warning(f"⚠️ Auto-switching to High Volume Mode ({total_files} files detected)")
+                h_volume = True
+
             progress_bar = st.progress(0, text="Preparing analysis...")
             status_text = st.empty()
             processed_count = 0
+            
+            # Deep Diagnostic Log
+            with st.sidebar.expander("📝 Processing Logs", expanded=False):
+                log_container = st.empty()
+                logs = ["Starting process..."]
+                log_container.code("\n".join(logs))
             
             for uploaded_zip in zip_file_list:
                 with zipfile.ZipFile(uploaded_zip, 'r') as z:
@@ -154,7 +165,8 @@ if zip_files and pm_file:
                             with z.open(file_name) as f:
                                 if file_name.lower().endswith('.csv'):
                                     try:
-                                        df = pd.read_csv(f, low_memory=False, usecols=lambda x: x in relevant_cols)
+                                        # Explicit dtype for ASIN to save memory
+                                        df = pd.read_csv(f, low_memory=False, usecols=lambda x: x in relevant_cols, dtype={'Asin': str, 'ASIN': str})
                                     except ValueError:
                                         f.seek(0)
                                         # Fallback: Load and immediately filter columns to minimize RAM spike
@@ -194,15 +206,25 @@ if zip_files and pm_file:
                                         all_unfiltered.append(df)
                                     
                                     del df, is_shipment
-                                    # Garbage collect occasionally but less frequently than before to save CPU
-                                    if processed_count % 20 == 0: gc.collect()
+                                    
+                                    # Strict Garbage Collection: Run after EVERY file to minimize peak RAM
+                                    gc.collect()
+                                    
+                                    # Update Diagnostic Log
+                                    logs.append(f"✅ [{processed_count}] {file_name}")
+                                    log_container.code("\n".join(logs[-10:])) # Show last 10 processed items
 
                         except Exception as e:
-                            st.sidebar.error(f"⚠️ Error in {file_name}: {str(e)}")
+                            err_msg = f"❌ Error in {file_name}: {str(e)}"
+                            st.sidebar.error(err_msg)
+                            logs.append(err_msg)
+                            log_container.code("\n".join(logs[-10:]))
                             continue
             
             # Final concatenation - One big concat is better than many small ones
             status_text.text("📊 Consolidating all data... Please wait.")
+            logs.append("📊 Consolidating all data chunks...")
+            log_container.code("\n".join(logs[-10:]))
             
             filtered_combined = pd.concat(all_shipments, ignore_index=True) if all_shipments else pd.DataFrame()
             del all_shipments
