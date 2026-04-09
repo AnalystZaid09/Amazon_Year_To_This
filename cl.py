@@ -8,12 +8,26 @@ import gc
 import numpy as np
 
 import base64
+try:
+    import psutil
+except ImportError:
+    psutil = None
 
 st.set_page_config(page_title="Sales Data Analysis", layout="wide", initial_sidebar_state="expanded")
 
 # Initialize session state for analysis control
 if 'start_analysis' not in st.session_state:
     st.session_state.start_analysis = False
+
+# Initialize data storage in session state to prevent redundant processing
+if 'processed_df' not in st.session_state:
+    st.session_state.processed_df = None
+if 'unfiltered_combined_df' not in st.session_state:
+    st.session_state.unfiltered_combined_df = None
+if 'transaction_counts' not in st.session_state:
+    st.session_state.transaction_counts = {}
+if 'metrics' not in st.session_state:
+    st.session_state.metrics = {'filtered_count': 0, 'unfiltered_count': 0}
 
 # Helper function to generate Excel binary data (Memory efficient - only generates when needed)
 @st.cache_data(show_spinner="Generating Excel file...")
@@ -22,6 +36,20 @@ def convert_df_to_excel(df):
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=False)
     return output.getvalue()
+
+def get_ram_usage():
+    if psutil:
+        process = psutil.Process()
+        mem_info = process.memory_info()
+        return mem_info.rss / (1024 * 1024) # Return MB
+    return 0
+
+def show_mem_warning():
+    ram = get_ram_usage()
+    if ram > 800: # 800MB limit alert for Streamlit Cloud
+        st.sidebar.warning(f"⚠️ RAM Usage High: {ram:.0f}MB / 1024MB. Consider using High Volume Mode.")
+    elif ram > 0:
+        st.sidebar.caption(f"📊 RAM Usage: {ram:.0f}MB")
 
 def render_download_button(df, filename, button_text, key=None):
     """Use native Streamlit download_button.
@@ -77,7 +105,13 @@ st.sidebar.header("Upload Files")
 # Add a clear cache button to ensure fresh data processing
 if st.sidebar.button("🔄 Clear Cache & Refresh"):
     st.cache_data.clear()
+    # Explicitly clear session state data
+    st.session_state.processed_df = None
+    st.session_state.unfiltered_combined_df = None
+    st.session_state.start_analysis = False
     st.rerun()
+
+show_mem_warning()
 
 b2c_files = st.sidebar.file_uploader(
     "1. B2C Zip Files (Consumer Reports)", 
@@ -103,6 +137,9 @@ if 'last_batch_id' not in st.session_state:
 if st.session_state.last_batch_id != current_batch_id:
     st.session_state.start_analysis = False
     st.session_state.last_batch_id = current_batch_id
+    # Clear cached results when files are changed
+    st.session_state.processed_df = None
+    st.session_state.unfiltered_combined_df = None
 
 high_volume_mode = st.sidebar.checkbox(
     "🚀 High Volume Mode (50+ files)", 
@@ -113,7 +150,7 @@ high_volume_mode = st.sidebar.checkbox(
 if (b2c_files or b2b_files) and pm_file:
     # Analysis Trigger Button
     if not st.session_state.start_analysis:
-        if st.sidebar.button("🚀 Start Data Analysis", width='stretch', type="primary"):
+        if st.sidebar.button("🚀 Start Data Analysis", use_container_width=True, type="primary"):
             st.session_state.start_analysis = True
             st.rerun()
     
@@ -141,8 +178,8 @@ if (b2c_files or b2b_files) and pm_file:
             
             # v2.5 Auto-High-Volume Safety Check (RAM + Count)
             total_upload_size = sum([f.size for f in zip_file_list]) if zip_file_list else 0
-            if (total_files > 15 or total_upload_size > 100 * 1024 * 1024) and not h_volume:
-                st.sidebar.warning(f"🚀 {segment} Auto-optimizing for Large Dataset ({total_files} files, {total_upload_size/1024/1024:.1f} MB)")
+            if (total_files > 12 or total_upload_size > 50 * 1024 * 1024) and not h_volume:
+                st.sidebar.warning(f"🚀 {segment} Auto-optimizing for Cloud RAM Safety ({total_files} files, {total_upload_size/1024/1024:.1f} MB)")
                 h_volume = True
 
             progress_bar = st.progress(0, text=f"Preparing {segment} analysis...")
@@ -199,6 +236,11 @@ if (b2c_files or b2b_files) and pm_file:
                                             else:
                                                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype('float32')
 
+                                    # Memory Optimization: Compress strings early
+                                    for col in ['Asin', 'Transaction Type']:
+                                        if col in df.columns:
+                                            df[col] = df[col].astype(str).astype('category')
+
                                     # Tag Segment
                                     df['Segment'] = segment
 
@@ -242,25 +284,12 @@ if (b2c_files or b2b_files) and pm_file:
             
             return filtered_combined, unfiltered_combined, transaction_counts
 
-        # Run sequential processing to save RAM
-        f_b2c, u_b2c, t_b2c = process_zip_files(b2c_files, high_volume_mode, "B2C")
-        f_b2b, u_b2b, t_b2b = process_zip_files(b2b_files, high_volume_mode, "B2B")
-        
-        # Combine results
-        f_combined = pd.concat([f_b2c, f_b2b], ignore_index=True)
-        u_combined = pd.concat([u_b2c, u_b2b], ignore_index=True)
-        
-        # Combine transaction counts
-        t_counts = t_b2c.copy()
-        for k, v in t_b2b.items():
-            t_counts[k] = t_counts.get(k, 0) + v
-            
-        del f_b2c, f_b2b, u_b2c, u_b2b, t_b2c, t_b2b
         gc.collect()
 
         def process_data(filtered_df, unfiltered_df, pm_df, cat_df=None):
             def add_date_columns(df):
                 if df.empty: return df
+                # Speed up datetime parsing and save RAM spikes with explicit format if possible
                 df['Invoice Date'] = pd.to_datetime(df['Invoice Date'], errors='coerce')
                 df['Date'] = df['Invoice Date'].dt.date
                 df['Month'] = pd.to_datetime(df['Date']).dt.month
@@ -337,28 +366,41 @@ if (b2c_files or b2b_files) and pm_file:
             gc.collect()
             return filtered_df, unfiltered_df, len(filtered_df), len(unfiltered_df)
 
-        with st.spinner("Processing files..."):
-            # Run sequential processing to save RAM
-            f_b2c, u_b2c, t_b2c = process_zip_files(b2c_files, high_volume_mode, "B2C")
-            f_b2b, u_b2b, t_b2b = process_zip_files(b2b_files, high_volume_mode, "B2B")
-            
-            # Combine results
-            f_combined = pd.concat([f_b2c, f_b2b], ignore_index=True)
-            u_combined = pd.concat([u_b2c, u_b2b], ignore_index=True)
-            
-            # Combine transaction counts
-            transaction_counts = t_b2c.copy()
-            for k, v in t_b2b.items():
-                transaction_counts[k] = transaction_counts.get(k, 0) + v
+        if st.session_state.processed_df is None:
+            with st.spinner("Processing files..."):
+                # Run sequential processing to save RAM
+                f_b2c, u_b2c, t_b2c = process_zip_files(b2c_files, high_volume_mode, "B2C")
+                f_b2b, u_b2b, t_b2b = process_zip_files(b2b_files, high_volume_mode, "B2B")
                 
-            del f_b2c, f_b2b, u_b2c, u_b2b, t_b2c, t_b2b
-            gc.collect()
+                # Combine results
+                f_combined = pd.concat([f_b2c, f_b2b], ignore_index=True)
+                u_combined = pd.concat([u_b2c, u_b2b], ignore_index=True)
+                
+                # Combine transaction counts
+                t_counts = t_b2c.copy()
+                for k, v in t_b2b.items():
+                    t_counts[k] = t_counts.get(k, 0) + v
+                st.session_state.transaction_counts = t_counts
+                    
+                del f_b2c, f_b2b, u_b2c, u_b2b, t_b2c, t_b2b
+                gc.collect()
 
-            pm_df = pd.read_excel(pm_file)
-            cat_df = pd.read_excel(cat_file) if cat_file else None
-            processed_df, unfiltered_combined_df, filtered_count, unfiltered_count = process_data(f_combined, u_combined, pm_df, cat_df)
-            del f_combined, u_combined, pm_df, cat_df
-            gc.collect()
+                pm_df = pd.read_excel(pm_file)
+                cat_df = pd.read_excel(cat_file) if cat_file else None
+                
+                # Store results in session state
+                st.session_state.processed_df, st.session_state.unfiltered_combined_df, f_count, u_count = process_data(f_combined, u_combined, pm_df, cat_df)
+                st.session_state.metrics = {'filtered_count': f_count, 'unfiltered_count': u_count}
+                
+                del f_combined, u_combined, pm_df, cat_df
+                gc.collect()
+        
+        # Reference data from session state
+        processed_df = st.session_state.processed_df
+        unfiltered_combined_df = st.session_state.unfiltered_combined_df
+        transaction_counts = st.session_state.transaction_counts
+        filtered_count = st.session_state.metrics['filtered_count']
+        unfiltered_count = st.session_state.metrics['unfiltered_count']
         
         # Guard against zero records found
         if filtered_count == 0 and unfiltered_count == 0:
@@ -621,7 +663,7 @@ if (b2c_files or b2b_files) and pm_file:
                     lambda x: f"{int(float(x)):,.0f}" if pd.notnull(x) and str(x).replace('.','',1).replace('-','',1).isdigit() else "0"
                 )
             
-            st.dataframe(display_brand_pivot, width='stretch', height=600)
+            st.dataframe(display_brand_pivot, use_container_width=True, height=600)
             
             # Download link (Excel format)
             render_download_button(brand_pivot, f"brand_analysis_{time_period}.xlsx", "Download Brand Analysis Excel", key="brand_dl")
@@ -674,7 +716,7 @@ if (b2c_files or b2b_files) and pm_file:
                     lambda x: f"{int(float(x)):,.0f}" if pd.notnull(x) and str(x).replace('.','',1).replace('-','',1).isdigit() else "0"
                 )
             
-            st.dataframe(display_asin_pivot, width='stretch', height=600)
+            st.dataframe(display_asin_pivot, use_container_width=True, height=600)
             
             # Download link (Excel format)
             render_download_button(asin_pivot, f"asin_analysis_{time_period}.xlsx", "Download ASIN Analysis Excel", key="asin_dl")
@@ -695,14 +737,14 @@ if (b2c_files or b2b_files) and pm_file:
             
             if selected_columns:
                 # Display row limit for large datasets to prevent browser crashes
-                row_limit = 50000
+                row_limit = 10000
                 if len(filtered_df) > row_limit:
-                    st.warning(f"⚠️ Showing only first {row_limit:,} rows for performance. Full data is available in the Excel download below.")
+                    st.warning(f"⚠️ Showing only first {row_limit:,} rows for RAM stability. Full data is available in the Excel download below.")
                     display_df = filtered_df[selected_columns].head(row_limit).copy()
                 else:
                     display_df = filtered_df[selected_columns].copy()
                 
-                st.dataframe(display_df, width='stretch', height=600)
+                st.dataframe(display_df, use_container_width=True, height=600)
                 
                 # Download link - Excel format
                 render_download_button(filtered_df[selected_columns], f"filtered_data_{time_period}.xlsx", "Download ALL Filtered Data Excel", key="raw_dl")
@@ -720,7 +762,7 @@ if (b2c_files or b2b_files) and pm_file:
                     trans_type_counts = unfiltered_combined_df['Transaction Type'].value_counts().reset_index()
                     trans_type_counts.columns = ['Transaction Type', 'Count']
                     trans_type_counts['Percentage'] = (trans_type_counts['Count'] / trans_type_counts['Count'].sum() * 100).round(2).astype(str) + '%'
-                    st.dataframe(trans_type_counts, width='stretch')
+                    st.dataframe(trans_type_counts, use_container_width=True)
                 
                 st.subheader("All Data")
                 
@@ -737,8 +779,15 @@ if (b2c_files or b2b_files) and pm_file:
                 )
                 
                 if selected_columns_unfiltered:
-                    display_unfiltered_df = unfiltered_combined_df[selected_columns_unfiltered].copy()
-                    st.dataframe(display_unfiltered_df, width='stretch', height=600)
+                    # Apply row limit for unfiltered data as well
+                    row_limit_u = 10000
+                    if len(unfiltered_combined_df) > row_limit_u:
+                        st.warning(f"⚠️ Showing only first {row_limit_u:,} rows for RAM stability.")
+                        display_unfiltered_df = unfiltered_combined_df[selected_columns_unfiltered].head(row_limit_u).copy()
+                    else:
+                        display_unfiltered_df = unfiltered_combined_df[selected_columns_unfiltered].copy()
+                    
+                    st.dataframe(display_unfiltered_df, use_container_width=True, height=600)
                     
                     # Download link - Excel format (base64 approach for Streamlit Cloud)
                     render_download_button(display_unfiltered_df, f"combined_unfiltered_data_{time_period}.xlsx", "Download Combined (Unfiltered) Data Excel", key="unfiltered_dl")
@@ -887,7 +936,7 @@ if (b2c_files or b2b_files) and pm_file:
                     with metric_col4:
                         st.metric(f"Brands in {previous_year}", f"{len(previous_year_data['Brand'].dropna().unique()):,}")
                     
-                    st.dataframe(display_brand_comparison, width='stretch', height=600)
+                    st.dataframe(display_brand_comparison, use_container_width=True, height=600)
                     
                     # Download link (native download button)
                     render_download_button(brand_comparison, f"brand_comparison_{current_year}_vs_{previous_year}.xlsx", "Download Brand Comparison Excel", key="brand_comp_dl")
@@ -1049,7 +1098,7 @@ if (b2c_files or b2b_files) and pm_file:
                     with metric_col4:
                         st.metric(f"Unique ASINs in {previous_year_asin}", f"{len(previous_year_data_asin['Asin'].dropna().unique()):,}")
                     
-                    st.dataframe(display_asin_comparison, width='stretch', height=600)
+                    st.dataframe(display_asin_comparison, use_container_width=True, height=600)
                     
                     # Download link (native download button)
                     render_download_button(asin_comparison, f"asin_comparison_{current_year_asin}_vs_{previous_year_asin}.xlsx", "Download ASIN Comparison Excel", key="asin_comp_dl")
